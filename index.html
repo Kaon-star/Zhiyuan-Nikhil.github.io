@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Meteor Dodge 3D</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            height: 100%;
+            background: #000;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            color: #fff;
+        }
+
+        #canvasContainer {
+            position: fixed;
+            inset: 0;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        #hud {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            padding: 10px 12px;
+            background: rgba(0, 0, 0, 0.55);
+            border-radius: 8px;
+            font-size: 14px;
+            pointer-events: none;
+        }
+
+        #hud h1 {
+            margin: 0 0 4px 0;
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        #groupInfo {
+            font-size: 12px;
+            margin-bottom: 6px;
+            opacity: 0.9;
+        }
+
+        #modeToggle {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            margin-bottom: 6px;
+            pointer-events: auto;
+        }
+
+        #modeToggle button {
+            padding: 4px 8px;
+            border-radius: 4px;
+            border: 1px solid #666;
+            background: #222;
+            color: #fff;
+            font-size: 12px;
+            cursor: pointer;
+        }
+
+        #modeToggle button.active {
+            background: #4caf50;
+            border-color: #4caf50;
+        }
+
+        #scoreDisplay {
+            font-size: 13px;
+            margin-bottom: 4px;
+        }
+
+        #statusMessage {
+            font-size: 13px;
+            color: #ffcc66;
+            min-height: 1.2em;
+        }
+
+        #controls {
+            position: fixed;
+            bottom: 16px;
+            right: 16px;
+            width: 120px;
+            height: 120px;
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            grid-template-rows: repeat(3, 1fr);
+            gap: 4px;
+            pointer-events: auto;
+        }
+
+        #controls button {
+            border: 1px solid #666;
+            background: rgba(0, 0, 0, 0.7);
+            color: #fff;
+            font-size: 18px;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+
+        #controls button:active {
+            background: #4caf50;
+        }
+
+        #controls button.empty {
+            visibility: hidden;
+        }
+
+        #instructions {
+            position: fixed;
+            bottom: 12px;
+            left: 12px;
+            max-width: 260px;
+            font-size: 11px;
+            background: rgba(0, 0, 0, 0.6);
+            padding: 6px 8px;
+            border-radius: 6px;
+            line-height: 1.3;
+        }
+
+        @media (max-width: 600px) {
+            #hud {
+                font-size: 12px;
+            }
+            #hud h1 {
+                font-size: 16px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvasContainer"></div>
+
+    <div id="hud">
+        <h1>Meteor Dodge 3D</h1>
+        <div id="groupInfo">
+            <!-- TODO: replace with your real group name and ID -->
+            Group: Awesome Meteors • ID: <strong>1234</strong>
+        </div>
+
+        <div id="modeToggle">
+            <span style="font-size:12px;">Mode:</span>
+            <button id="btnPrototype" class="active">Prototype</button>
+            <button id="btnFull">Full</button>
+        </div>
+
+        <div id="scoreDisplay">Score: 0.0</div>
+        <div id="statusMessage"></div>
+    </div>
+
+    <div id="controls">
+        <button class="empty"></button>
+        <button data-dir="up">▲</button>
+        <button class="empty"></button>
+
+        <button data-dir="left">◀</button>
+        <button class="empty"></button>
+        <button data-dir="right">▶</button>
+
+        <button class="empty"></button>
+        <button data-dir="down">▼</button>
+        <button class="empty"></button>
+    </div>
+
+    <div id="instructions">
+        Keyboard: WASD / Arrow keys to move, R to restart.<br />
+        Mobile: use the on-screen arrows.
+    </div>
+
+    <!-- THREE & GLTFLoader from CDN (0.154.0, has build/three.min.js) -->
+    <script src="https://unpkg.com/three@0.154.0/build/three.min.js"></script>
+    <script src="https://unpkg.com/three@0.154.0/examples/js/loaders/GLTFLoader.js"></script>
+
+    <script>
+    window.addEventListener("load", function () {
+        // ------------------------------------------------------------
+        // Global state
+        // ------------------------------------------------------------
+        let scene, camera, renderer;
+        let player = null;
+        let meteors = [];
+        let platform = null;
+        let skySphere = null;
+
+        const moveState = {
+            left: false,
+            right: false,
+            forward: false,
+            backward: false
+        };
+
+        let isPrototypeMode = true;
+        let isGameOver = false;
+        let score = 0;
+        let lastTime = 0;
+        const meteorCount = 22;
+        const worldSize = 18;
+        const playerSpeed = 12;
+        const baseMeteorSpeed = 8;
+
+        let textureLoader;
+        let gltfLoader;
+
+        const scoreDisplay = document.getElementById("scoreDisplay");
+        const statusMessage = document.getElementById("statusMessage");
+        const btnPrototype = document.getElementById("btnPrototype");
+        const btnFull = document.getElementById("btnFull");
+        const canvasContainer = document.getElementById("canvasContainer");
+
+        init();
+        animate(0);
+
+        // ------------------------------------------------------------
+        // Initialization
+        // ------------------------------------------------------------
+        function init() {
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setClearColor(0x000000);
+            canvasContainer.appendChild(renderer.domElement);
+
+            scene = new THREE.Scene();
+
+            camera = new THREE.PerspectiveCamera(
+                60,
+                window.innerWidth / window.innerHeight,
+                0.1,
+                200
+            );
+            // slightly angled top-down camera
+            camera.position.set(0, 20, 26);
+            camera.lookAt(0, 0, 0);
+
+            const ambient = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambient);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
+            dirLight.position.set(10, 20, 10);
+            scene.add(dirLight);
+
+            textureLoader = new THREE.TextureLoader();
+
+            // GLTFLoader from script tag – usually attached as THREE.GLTFLoader
+            if (THREE.GLTFLoader) {
+                gltfLoader = new THREE.GLTFLoader();
+            } else if (typeof GLTFLoader !== "undefined") {
+                gltfLoader = new GLTFLoader();
+            } else {
+                console.warn("GLTFLoader not found; full mode will use fallback player.");
+                gltfLoader = null;
+            }
+
+            createBaseWorld();
+            setMode(true);
+            setupInput();
+            window.addEventListener("resize", onWindowResize);
+        }
+
+        function createBaseWorld() {
+            const geo = new THREE.PlaneGeometry(worldSize, worldSize);
+            const mat = new THREE.MeshStandardMaterial({ color: 0x222222 });
+            platform = new THREE.Mesh(geo, mat);
+            platform.rotation.x = -Math.PI / 2;
+            platform.receiveShadow = true;
+            scene.add(platform);
+
+            const skyGeo = new THREE.SphereGeometry(80, 32, 32);
+            const skyMat = new THREE.MeshBasicMaterial({
+                color: 0x000000,
+                side: THREE.BackSide
+            });
+            skySphere = new THREE.Mesh(skyGeo, skyMat);
+            scene.add(skySphere);
+        }
+
+        // ------------------------------------------------------------
+        // Mode switching
+        // ------------------------------------------------------------
+        function setMode(prototype) {
+            isPrototypeMode = prototype;
+            btnPrototype.classList.toggle("active", prototype);
+            btnFull.classList.toggle("active", !prototype);
+
+            resetGameState();
+            clearDynamicObjects();
+
+            if (isPrototypeMode) {
+                createPrototypePlayerAndMeteors();
+                setPrototypeMaterials();
+                statusMessage.textContent = "Prototype mode: primitive geometries only.";
+            } else {
+                createFullPlayerAndMeteors();
+                setFullMaterialsAndTextures();
+                statusMessage.textContent = "Full mode: using loaded model(s) and textures.";
+            }
+        }
+
+        function resetGameState() {
+            isGameOver = false;
+            score = 0;
+            scoreDisplay.textContent = "Score: 0.0";
+            statusMessage.textContent = "";
+        }
+
+        function clearDynamicObjects() {
+            if (player) {
+                scene.remove(player);
+                player = null;
+            }
+            meteors.forEach(m => scene.remove(m));
+            meteors = [];
+        }
+
+        function createPrototypePlayerAndMeteors() {
+            const playerGeo = new THREE.BoxGeometry(1.5, 1, 2);
+            const playerMat = new THREE.MeshStandardMaterial({ color: 0x4caf50 });
+            player = new THREE.Mesh(playerGeo, playerMat);
+            player.position.set(0, 1, 0);
+            scene.add(player);
+
+            const meteorGeo = new THREE.SphereGeometry(0.7, 16, 16);
+            for (let i = 0; i < meteorCount; i++) {
+                const mat = new THREE.MeshStandardMaterial({ color: 0xff6347 });
+                const mesh = new THREE.Mesh(meteorGeo, mat);
+                resetMeteorPosition(mesh, true);
+                scene.add(mesh);
+                meteors.push(mesh);
+            }
+        }
+
+        function createFullPlayerAndMeteors() {
+            // Fallback rocket made from primitives
+            const fallbackPlayer = createFallbackFullPlayer();
+            player = fallbackPlayer;
+            scene.add(player);
+
+            // Optional: replace with loaded model if GLTFLoader is available
+            if (gltfLoader) {
+                // TODO: change path to your real .glb model
+                gltfLoader.load(
+                    "assets/models/spaceship.glb",
+                    function (gltf) {
+                        if (player) scene.remove(player);
+                        player = gltf.scene;
+                        player.traverse(obj => {
+                            if (obj.isMesh) {
+                                obj.castShadow = true;
+                                obj.receiveShadow = true;
+                            }
+                        });
+                        player.scale.set(1.8, 1.8, 1.8);
+                        player.position.set(0, 1, 0);
+                        scene.add(player);
+                    },
+                    undefined,
+                    function (err) {
+                        console.warn("Could not load spaceship model, using fallback rocket.", err);
+                    }
+                );
+            }
+
+            const meteorGeo = new THREE.SphereGeometry(0.7, 24, 24);
+
+            // TODO: change path if your texture is elsewhere
+            const rockTexture = textureLoader.load(
+                "assets/textures/rock.jpg",
+                function () {},
+                undefined,
+                function () {
+                    console.warn("Could not load rock texture, using plain color.");
+                }
+            );
+
+            for (let i = 0; i < meteorCount; i++) {
+                const mat = new THREE.MeshStandardMaterial({
+                    map: rockTexture,
+                    color: 0xffffff
+                });
+                const mesh = new THREE.Mesh(meteorGeo, mat);
+                resetMeteorPosition(mesh, true);
+                scene.add(mesh);
+                meteors.push(mesh);
+            }
+        }
+
+        function createFallbackFullPlayer() {
+            const bodyGeo = new THREE.CylinderGeometry(0.5, 0.8, 2.2, 12);
+            const bodyMat = new THREE.MeshStandardMaterial({ color: 0x00bcd4 });
+            const body = new THREE.Mesh(bodyGeo, bodyMat);
+
+            const noseGeo = new THREE.ConeGeometry(0.5, 1.0, 12);
+            const noseMat = new THREE.MeshStandardMaterial({ color: 0xffeb3b });
+            const nose = new THREE.Mesh(noseGeo, noseMat);
+            nose.position.y = 1.5;
+
+            const group = new THREE.Group();
+            group.add(body);
+            group.add(nose);
+            group.position.set(0, 1, 0);
+            return group;
+        }
+
+        function setPrototypeMaterials() {
+            if (platform && platform.material) {
+                platform.material = new THREE.MeshStandardMaterial({ color: 0x222222 });
+            }
+            if (skySphere && skySphere.material) {
+                skySphere.material = new THREE.MeshBasicMaterial({
+                    color: 0x000000,
+                    side: THREE.BackSide
+                });
+            }
+        }
+
+        function setFullMaterialsAndTextures() {
+            // TODO: change path if your floor texture is elsewhere
+            const floorTex = textureLoader.load(
+                "assets/textures/metal_floor.jpg",
+                function () {},
+                undefined,
+                function () {
+                    console.warn("Could not load floor texture, using color.");
+                }
+            );
+
+            if (platform && platform.material) {
+                platform.material = new THREE.MeshStandardMaterial({
+                    map: floorTex,
+                    color: 0xffffff,
+                    metalness: 0.4,
+                    roughness: 0.6
+                });
+            }
+
+            if (skySphere && skySphere.material) {
+                skySphere.material = new THREE.MeshBasicMaterial({
+                    color: 0x050818,
+                    side: THREE.BackSide
+                });
+            }
+        }
+
+        // ------------------------------------------------------------
+        // Input handling
+        // ------------------------------------------------------------
+        function setupInput() {
+            window.addEventListener("keydown", onKeyDown);
+            window.addEventListener("keyup", onKeyUp);
+
+            btnPrototype.addEventListener("click", () => setMode(true));
+            btnFull.addEventListener("click", () => setMode(false));
+
+            const controlButtons = document.querySelectorAll("#controls button[data-dir]");
+            controlButtons.forEach(btn => {
+                const dir = btn.getAttribute("data-dir");
+
+                function pressHandler(e) {
+                    e.preventDefault();
+                    setMoveState(dir, true);
+                }
+
+                function releaseHandler(e) {
+                    e.preventDefault();
+                    setMoveState(dir, false);
+                }
+
+                btn.addEventListener("mousedown", pressHandler);
+                btn.addEventListener("mouseup", releaseHandler);
+                btn.addEventListener("mouseleave", releaseHandler);
+
+                btn.addEventListener("touchstart", pressHandler, { passive: false });
+                btn.addEventListener("touchend", releaseHandler, { passive: false });
+                btn.addEventListener("touchcancel", releaseHandler, { passive: false });
+            });
+        }
+
+        function onKeyDown(e) {
+            if (e.key === "ArrowLeft" || e.key === "a" || e.key === "A") moveState.left = true;
+            if (e.key === "ArrowRight" || e.key === "d" || e.key === "D") moveState.right = true;
+            if (e.key === "ArrowUp" || e.key === "w" || e.key === "W") moveState.forward = true;
+            if (e.key === "ArrowDown" || e.key === "s" || e.key === "S") moveState.backward = true;
+
+            if (e.key === "r" || e.key === "R") {
+                resetGameState();
+                clearDynamicObjects();
+                if (isPrototypeMode) {
+                    createPrototypePlayerAndMeteors();
+                    setPrototypeMaterials();
+                } else {
+                    createFullPlayerAndMeteors();
+                    setFullMaterialsAndTextures();
+                }
+            }
+        }
+
+        function onKeyUp(e) {
+            if (e.key === "ArrowLeft" || e.key === "a" || e.key === "A") moveState.left = false;
+            if (e.key === "ArrowRight" || e.key === "d" || e.key === "D") moveState.right = false;
+            if (e.key === "ArrowUp" || e.key === "w" || e.key === "W") moveState.forward = false;
+            if (e.key === "ArrowDown" || e.key === "s" || e.key === "S") moveState.backward = false;
+        }
+
+        function setMoveState(dir, value) {
+            if (dir === "left") moveState.left = value;
+            if (dir === "right") moveState.right = value;
+            if (dir === "up") moveState.forward = value;
+            if (dir === "down") moveState.backward = value;
+        }
+
+        // ------------------------------------------------------------
+        // Game loop
+        // ------------------------------------------------------------
+        function animate(timestamp) {
+            requestAnimationFrame(animate);
+
+            const t = timestamp * 0.001;
+            const delta = lastTime ? t - lastTime : 0;
+            lastTime = t;
+
+            if (!isGameOver) {
+                updatePlayer(delta);
+                updateMeteors(delta);
+                checkCollisions();
+
+                score += delta;
+                scoreDisplay.textContent = "Score: " + score.toFixed(1);
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        function updatePlayer(delta) {
+            if (!player) return;
+
+            let dx = 0, dz = 0;
+            if (moveState.left) dx -= 1;
+            if (moveState.right) dx += 1;
+            if (moveState.forward) dz -= 1;
+            if (moveState.backward) dz += 1;
+
+            if (dx !== 0 || dz !== 0) {
+                const len = Math.sqrt(dx * dx + dz * dz);
+                dx /= len;
+                dz /= len;
+            }
+
+            const dist = playerSpeed * delta;
+            const newX = player.position.x + dx * dist;
+            const newZ = player.position.z + dz * dist;
+
+            const half = worldSize * 0.5 - 1.0;
+            player.position.x = THREE.MathUtils.clamp(newX, -half, half);
+            player.position.z = THREE.MathUtils.clamp(newZ, -half, half);
+
+            const maxTilt = 0.35;
+            const targetTiltZ = THREE.MathUtils.clamp(-dx * maxTilt, -maxTilt, maxTilt);
+            const targetTiltX = THREE.MathUtils.clamp(dz * maxTilt, -maxTilt, maxTilt);
+
+            player.rotation.z = THREE.MathUtils.lerp(player.rotation.z, targetTiltZ, 0.15);
+            player.rotation.x = THREE.MathUtils.lerp(player.rotation.x, targetTiltX, 0.15);
+        }
+
+        function updateMeteors(delta) {
+            const speedBoost = score * 0.15;
+            const fallSpeed = baseMeteorSpeed + speedBoost;
+
+            for (const m of meteors) {
+                m.position.y -= fallSpeed * delta;
+                m.rotation.x += 0.8 * delta;
+                m.rotation.y += 0.5 * delta;
+
+                if (m.position.y < -4) {
+                    resetMeteorPosition(m, false);
+                }
+            }
+        }
+
+        function resetMeteorPosition(meteor, randomHeight) {
+            const half = worldSize * 0.5 - 0.5;
+            meteor.position.x = THREE.MathUtils.randFloat(-half, half);
+            meteor.position.z = THREE.MathUtils.randFloat(-half, half);
+            meteor.position.y = randomHeight
+                ? THREE.MathUtils.randFloat(6, 24)
+                : THREE.MathUtils.randFloat(14, 26);
+        }
+
+        function checkCollisions() {
+            if (!player) return;
+
+            const playerPos = new THREE.Vector3();
+            player.getWorldPosition(playerPos);
+
+            const playerRadius = 0.9;
+            const meteorRadius = 0.7;
+
+            for (const m of meteors) {
+                const meteorPos = new THREE.Vector3();
+                m.getWorldPosition(meteorPos);
+
+                const dist = playerPos.distanceTo(meteorPos);
+                if (dist < playerRadius + meteorRadius) {
+                    gameOver();
+                    break;
+                }
+            }
+        }
+
+        function gameOver() {
+            if (isGameOver) return;
+            isGameOver = true;
+            statusMessage.textContent =
+                "Game over! Final score " + score.toFixed(1) + ". Press R or switch mode to restart.";
+        }
+
+        // ------------------------------------------------------------
+        // Resize
+        // ------------------------------------------------------------
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+    });
+    </script>
+</body>
+</html>
