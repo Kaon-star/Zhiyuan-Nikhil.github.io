@@ -79,6 +79,7 @@
             font-size: 13px;
             color: #ffcc66;
             min-height: 1.2em;
+            max-width: 260px;
         }
 
         #controls {
@@ -115,7 +116,7 @@
             position: fixed;
             bottom: 12px;
             left: 12px;
-            max-width: 260px;
+            max-width: 320px;
             font-size: 11px;
             background: rgba(0, 0, 0, 0.6);
             padding: 6px 8px;
@@ -182,10 +183,14 @@
         // Global state
         // ------------------------------------------------------------
         let scene, camera, renderer;
+
         let player = null;
         let meteors = [];
+        let meteorShadows = []; // NEW: shadow disk for each meteor
         let platform = null;
         let skySphere = null;
+        let walls = [];
+        let holes = []; // {mesh, x, z, halfSize}
 
         const moveState = {
             left: false,
@@ -198,8 +203,8 @@
         let isGameOver = false;
         let score = 0;
         let lastTime = 0;
-        const meteorCount = 22;
-        const worldSize = 18;
+        const meteorCount = 24;
+        const worldSize = 28;  // bigger arena
         const playerSpeed = 12;
         const baseMeteorSpeed = 8;
 
@@ -212,6 +217,12 @@
         const btnFull = document.getElementById("btnFull");
         const canvasContainer = document.getElementById("canvasContainer");
 
+        // Camera-aligned movement basis
+        const camForward = new THREE.Vector3();
+        const camRight = new THREE.Vector3();
+        const tmpDir = new THREE.Vector3();
+        const worldUp = new THREE.Vector3(0, 1, 0);
+
         init();
         animate(0);
 
@@ -222,7 +233,7 @@
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setPixelRatio(window.devicePixelRatio);
             renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.setClearColor(0x000000);
+            renderer.setClearColor(0x050818);
             canvasContainer.appendChild(renderer.domElement);
 
             scene = new THREE.Scene();
@@ -233,20 +244,20 @@
                 0.1,
                 200
             );
-            // slightly angled top-down camera
-            camera.position.set(0, 20, 26);
+            // fixed 2.5D angle (corner view)
+            camera.position.set(26, 24, 26);
             camera.lookAt(0, 0, 0);
+            computeCameraBasis();
 
             const ambient = new THREE.AmbientLight(0xffffff, 0.5);
             scene.add(ambient);
 
             const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
-            dirLight.position.set(10, 20, 10);
+            dirLight.position.set(16, 26, 10);
             scene.add(dirLight);
 
             textureLoader = new THREE.TextureLoader();
 
-            // GLTFLoader from script tag – usually attached as THREE.GLTFLoader
             if (THREE.GLTFLoader) {
                 gltfLoader = new THREE.GLTFLoader();
             } else if (typeof GLTFLoader !== "undefined") {
@@ -262,6 +273,14 @@
             window.addEventListener("resize", onWindowResize);
         }
 
+        function computeCameraBasis() {
+            // Camera forward in world coordinates
+            camera.getWorldDirection(tmpDir);
+            // Flatten to XZ plane
+            camForward.set(tmpDir.x, 0, tmpDir.z).normalize();        // "up" on screen
+            camRight.crossVectors(camForward, worldUp).normalize();   // "right" on screen
+        }
+
         function createBaseWorld() {
             const geo = new THREE.PlaneGeometry(worldSize, worldSize);
             const mat = new THREE.MeshStandardMaterial({ color: 0x222222 });
@@ -270,13 +289,65 @@
             platform.receiveShadow = true;
             scene.add(platform);
 
+            // NEW: grid helper on top of the platform for depth cues
+            const grid = new THREE.GridHelper(worldSize, 8, 0x444444, 0x333333);
+            grid.position.y = 0.02;
+            scene.add(grid);
+
             const skyGeo = new THREE.SphereGeometry(80, 32, 32);
             const skyMat = new THREE.MeshBasicMaterial({
-                color: 0x000000,
+                color: 0x050818,
                 side: THREE.BackSide
             });
             skySphere = new THREE.Mesh(skyGeo, skyMat);
             scene.add(skySphere);
+
+            createWallsAndHoles();
+        }
+
+        function createWallsAndHoles() {
+            const half = worldSize * 0.5;
+            const wallHeight = 2.2;
+            const wallThickness = 0.6;
+            const wallMat = new THREE.MeshStandardMaterial({ color: 0x555555 });
+
+            const wallGeoZ = new THREE.BoxGeometry(worldSize, wallHeight, wallThickness);
+            const wallGeoX = new THREE.BoxGeometry(wallThickness, wallHeight, worldSize);
+
+            const north = new THREE.Mesh(wallGeoZ, wallMat);
+            north.position.set(0, wallHeight / 2, -half);
+            const south = north.clone();
+            south.position.z = half;
+
+            const west = new THREE.Mesh(wallGeoX, wallMat);
+            west.position.set(-half, wallHeight / 2, 0);
+            const east = west.clone();
+            east.position.x = half;
+
+            [north, south, west, east].forEach(w => {
+                scene.add(w);
+                walls.push(w);
+            });
+
+            // Holes positions (x, z, halfSize)
+            const holeSpecs = [
+                { x: -6, z: 6, halfSize: 2.5 },
+                { x: 8,  z: -2, halfSize: 2.2 },
+                { x: 0,  z: -8, halfSize: 3.0 }
+            ];
+            const holeMat = new THREE.MeshStandardMaterial({
+                color: 0x050505,
+                metalness: 0.1,
+                roughness: 0.9
+            });
+
+            holeSpecs.forEach(h => {
+                const hg = new THREE.BoxGeometry(h.halfSize * 2, 0.05, h.halfSize * 2);
+                const mesh = new THREE.Mesh(hg, holeMat);
+                mesh.position.set(h.x, 0.01, h.z);
+                scene.add(mesh);
+                holes.push({ mesh, x: h.x, z: h.z, halfSize: h.halfSize });
+            });
         }
 
         // ------------------------------------------------------------
@@ -315,6 +386,10 @@
             }
             meteors.forEach(m => scene.remove(m));
             meteors = [];
+
+            // NEW: clear shadows
+            meteorShadows.forEach(s => scene.remove(s));
+            meteorShadows = [];
         }
 
         function createPrototypePlayerAndMeteors() {
@@ -324,23 +399,35 @@
             player.position.set(0, 1, 0);
             scene.add(player);
 
-            const meteorGeo = new THREE.SphereGeometry(0.7, 16, 16);
+            const meteorGeo = new THREE.SphereGeometry(0.8, 16, 16);
+            const shadowGeo = new THREE.CircleGeometry(0.9, 16);
+
             for (let i = 0; i < meteorCount; i++) {
                 const mat = new THREE.MeshStandardMaterial({ color: 0xff6347 });
                 const mesh = new THREE.Mesh(meteorGeo, mat);
                 resetMeteorPosition(mesh, true);
                 scene.add(mesh);
                 meteors.push(mesh);
+
+                // NEW: shadow disk
+                const shadowMat = new THREE.MeshBasicMaterial({
+                    color: 0x000000,
+                    transparent: true,
+                    opacity: 0.35
+                });
+                const shadow = new THREE.Mesh(shadowGeo, shadowMat);
+                shadow.rotation.x = -Math.PI / 2;
+                shadow.position.set(mesh.position.x, 0.02, mesh.position.z);
+                scene.add(shadow);
+                meteorShadows.push(shadow);
             }
         }
 
         function createFullPlayerAndMeteors() {
-            // Fallback rocket made from primitives
             const fallbackPlayer = createFallbackFullPlayer();
             player = fallbackPlayer;
             scene.add(player);
 
-            // Optional: replace with loaded model if GLTFLoader is available
             if (gltfLoader) {
                 // TODO: change path to your real .glb model
                 gltfLoader.load(
@@ -365,7 +452,8 @@
                 );
             }
 
-            const meteorGeo = new THREE.SphereGeometry(0.7, 24, 24);
+            const meteorGeo = new THREE.SphereGeometry(0.8, 24, 24);
+            const shadowGeo = new THREE.CircleGeometry(0.9, 16);
 
             // TODO: change path if your texture is elsewhere
             const rockTexture = textureLoader.load(
@@ -386,6 +474,18 @@
                 resetMeteorPosition(mesh, true);
                 scene.add(mesh);
                 meteors.push(mesh);
+
+                // NEW: shadow disk
+                const shadowMat = new THREE.MeshBasicMaterial({
+                    color: 0x000000,
+                    transparent: true,
+                    opacity: 0.35
+                });
+                const shadow = new THREE.Mesh(shadowGeo, shadowMat);
+                shadow.rotation.x = -Math.PI / 2;
+                shadow.position.set(mesh.position.x, 0.02, mesh.position.z);
+                scene.add(shadow);
+                meteorShadows.push(shadow);
             }
         }
 
@@ -412,14 +512,13 @@
             }
             if (skySphere && skySphere.material) {
                 skySphere.material = new THREE.MeshBasicMaterial({
-                    color: 0x000000,
+                    color: 0x050818,
                     side: THREE.BackSide
                 });
             }
         }
 
         function setFullMaterialsAndTextures() {
-            // TODO: change path if your floor texture is elsewhere
             const floorTex = textureLoader.load(
                 "assets/textures/metal_floor.jpg",
                 function () {},
@@ -538,39 +637,59 @@
         function updatePlayer(delta) {
             if (!player) return;
 
-            let dx = 0, dz = 0;
-            if (moveState.left) dx -= 1;
-            if (moveState.right) dx += 1;
-            if (moveState.forward) dz -= 1;
-            if (moveState.backward) dz += 1;
+            // Input in "screen" space: ix = left/right, iz = up/down (forward/back)
+            let ix = 0;
+            let iz = 0;
 
-            if (dx !== 0 || dz !== 0) {
-                const len = Math.sqrt(dx * dx + dz * dz);
-                dx /= len;
-                dz /= len;
+            if (moveState.left)  ix -= 1;
+            if (moveState.right) ix += 1;
+            if (moveState.forward)  iz += 1;   // W / ArrowUp -> move "up" on screen
+            if (moveState.backward) iz -= 1;   // S / ArrowDown -> move "down" on screen
+
+            if (ix === 0 && iz === 0) {
+                return;
             }
 
+            // normalize
+            const len = Math.sqrt(ix * ix + iz * iz);
+            ix /= len;
+            iz /= len;
+
+            // world movement based on camera basis:
+            // right/left along camRight, up/down along camForward
+            const worldMove = new THREE.Vector3();
+            worldMove.copy(camRight).multiplyScalar(ix);
+            worldMove.addScaledVector(camForward, iz);
+
             const dist = playerSpeed * delta;
-            const newX = player.position.x + dx * dist;
-            const newZ = player.position.z + dz * dist;
+            const newX = player.position.x + worldMove.x * dist;
+            const newZ = player.position.z + worldMove.z * dist;
 
             const half = worldSize * 0.5 - 1.0;
             player.position.x = THREE.MathUtils.clamp(newX, -half, half);
             player.position.z = THREE.MathUtils.clamp(newZ, -half, half);
 
             const maxTilt = 0.35;
-            const targetTiltZ = THREE.MathUtils.clamp(-dx * maxTilt, -maxTilt, maxTilt);
-            const targetTiltX = THREE.MathUtils.clamp(dz * maxTilt, -maxTilt, maxTilt);
+            const targetTiltZ = THREE.MathUtils.clamp(-ix * maxTilt, -maxTilt, maxTilt);
+            const targetTiltX = THREE.MathUtils.clamp(-iz * maxTilt, -maxTilt, maxTilt);
 
             player.rotation.z = THREE.MathUtils.lerp(player.rotation.z, targetTiltZ, 0.15);
             player.rotation.x = THREE.MathUtils.lerp(player.rotation.x, targetTiltX, 0.15);
+
+            // check if player is in any hole
+            if (!isGameOver && isInHole(player.position.x, player.position.z)) {
+                gameOver("You fell into a hole!");
+            }
         }
 
         function updateMeteors(delta) {
             const speedBoost = score * 0.15;
             const fallSpeed = baseMeteorSpeed + speedBoost;
 
-            for (const m of meteors) {
+            for (let i = 0; i < meteors.length; i++) {
+                const m = meteors[i];
+                const s = meteorShadows[i];
+
                 m.position.y -= fallSpeed * delta;
                 m.rotation.x += 0.8 * delta;
                 m.rotation.y += 0.5 * delta;
@@ -578,11 +697,25 @@
                 if (m.position.y < -4) {
                     resetMeteorPosition(m, false);
                 }
+
+                // NEW: update shadow position/scale/opacity
+                if (s) {
+                    s.position.x = m.position.x;
+                    s.position.z = m.position.z;
+
+                    // t = 0 (low) -> big dark shadow; t = 1 (high) -> small faint shadow
+                    const t = THREE.MathUtils.clamp((m.position.y - 2) / 18, 0, 1);
+                    const scale = THREE.MathUtils.lerp(1.5, 0.4, t);
+                    s.scale.set(scale, scale, 1);
+
+                    const mat = s.material;
+                    mat.opacity = THREE.MathUtils.lerp(0.55, 0.15, t);
+                }
             }
         }
 
         function resetMeteorPosition(meteor, randomHeight) {
-            const half = worldSize * 0.5 - 0.5;
+            const half = worldSize * 0.5 - 1.5;
             meteor.position.x = THREE.MathUtils.randFloat(-half, half);
             meteor.position.z = THREE.MathUtils.randFloat(-half, half);
             meteor.position.y = randomHeight
@@ -597,7 +730,7 @@
             player.getWorldPosition(playerPos);
 
             const playerRadius = 0.9;
-            const meteorRadius = 0.7;
+            const meteorRadius = 0.8;
 
             for (const m of meteors) {
                 const meteorPos = new THREE.Vector3();
@@ -605,17 +738,29 @@
 
                 const dist = playerPos.distanceTo(meteorPos);
                 if (dist < playerRadius + meteorRadius) {
-                    gameOver();
+                    gameOver("Hit by a meteor!");
                     break;
                 }
             }
         }
 
-        function gameOver() {
+        function isInHole(x, z) {
+            for (const h of holes) {
+                if (Math.abs(x - h.x) < h.halfSize &&
+                    Math.abs(z - h.z) < h.halfSize) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        function gameOver(reason) {
             if (isGameOver) return;
             isGameOver = true;
+            const base = "Game over! Final score " + score.toFixed(1) + ".";
+            const reasonText = reason ? " " + reason : "";
             statusMessage.textContent =
-                "Game over! Final score " + score.toFixed(1) + ". Press R or switch mode to restart.";
+                base + reasonText + " Press R or switch mode to restart.";
         }
 
         // ------------------------------------------------------------
