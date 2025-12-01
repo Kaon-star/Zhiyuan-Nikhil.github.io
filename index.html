@@ -148,9 +148,15 @@
             <button id="btnPrototype" class="active">Prototype</button>
             <button id="btnFull">Full</button>
         </div>
+        
+        <div id="modeToggle">
+            <span style="font-size:12px;">AI:</span>
+            <button id="btnAI">OFF</button>
+        </div>
 
         <div id="scoreDisplay">Score: 0.0</div>
         <div id="statusMessage"></div>
+        <div id="aiLevelDisplay" style="font-size:12px; margin-top:4px; opacity:0.8;">AI Level: 5 (Intermediate)</div>
     </div>
 
     <div id="controls">
@@ -169,12 +175,16 @@
 
     <div id="instructions">
         Keyboard: WASD / Arrow keys to move, R to restart.<br />
-        Mobile: use the on-screen arrows.
+        AI: Press I to toggle, [ ] to adjust level (1-10).<br />
+        Mobile: use the on-screen arrows and AI button.
     </div>
 
     <!-- THREE & GLTFLoader from CDN (0.154.0, has build/three.min.js) -->
     <script src="https://unpkg.com/three@0.154.0/build/three.min.js"></script>
     <script src="https://unpkg.com/three@0.154.0/examples/js/loaders/GLTFLoader.js"></script>
+    
+    <!-- AI Computer Player -->
+    <script src="computer.js"></script>
 
     <script>
     window.addEventListener("load", function () {
@@ -198,18 +208,25 @@
         let isGameOver = false;
         let score = 0;
         let lastTime = 0;
+        let useAI = false; // Toggle for AI control
+        let aiLevel = 5; // AI difficulty level (1-10)
         const meteorCount = 22;
         const worldSize = 18;
         const playerSpeed = 12;
         const baseMeteorSpeed = 8;
+        
+        // Create AI instance
+        const computerAI = new ComputerAI();
 
         let textureLoader;
         let gltfLoader;
 
         const scoreDisplay = document.getElementById("scoreDisplay");
         const statusMessage = document.getElementById("statusMessage");
+        const aiLevelDisplay = document.getElementById("aiLevelDisplay");
         const btnPrototype = document.getElementById("btnPrototype");
         const btnFull = document.getElementById("btnFull");
+        const btnAI = document.getElementById("btnAI");
         const canvasContainer = document.getElementById("canvasContainer");
 
         init();
@@ -306,6 +323,9 @@
             score = 0;
             scoreDisplay.textContent = "Score: 0.0";
             statusMessage.textContent = "";
+            
+            // Reset AI path planning
+            computerAI.reset();
         }
 
         function clearDynamicObjects() {
@@ -455,6 +475,7 @@
 
             btnPrototype.addEventListener("click", () => setMode(true));
             btnFull.addEventListener("click", () => setMode(false));
+            btnAI.addEventListener("click", toggleAI);
 
             const controlButtons = document.querySelectorAll("#controls button[data-dir]");
             controlButtons.forEach(btn => {
@@ -497,6 +518,21 @@
                     setFullMaterialsAndTextures();
                 }
             }
+            
+            if (e.key === "i" || e.key === "I") {
+                useAI = !useAI;
+                updateAIStatus();
+            }
+            
+            // AI level controls
+            if (e.key === "[" || e.key === "{") {
+                aiLevel = Math.max(1, aiLevel - 1);
+                updateAIStatus();
+            }
+            if (e.key === "]" || e.key === "}") {
+                aiLevel = Math.min(10, aiLevel + 1);
+                updateAIStatus();
+            }
         }
 
         function onKeyUp(e) {
@@ -511,6 +547,35 @@
             if (dir === "right") moveState.right = value;
             if (dir === "up") moveState.forward = value;
             if (dir === "down") moveState.backward = value;
+        }
+        
+        function toggleAI() {
+            useAI = !useAI;
+            updateAIStatus();
+        }
+        
+        function updateAIStatus() {
+            btnAI.textContent = useAI ? "ON" : "OFF";
+            btnAI.classList.toggle("active", useAI);
+            
+            // Update AI level display
+            const levelDesc = getLevelDescription(aiLevel);
+            aiLevelDisplay.textContent = `AI Level: ${aiLevel} (${levelDesc})`;
+            
+            if (useAI) {
+                statusMessage.textContent = `AI ACTIVE - Press [ ] to adjust level, I to disable`;
+                statusMessage.style.color = "#4caf50";
+            } else {
+                statusMessage.textContent = "Manual control - Press I to enable AI";
+                statusMessage.style.color = "#ffcc66";
+            }
+        }
+        
+        function getLevelDescription(level) {
+            if (level <= 3) return "Beginner";
+            if (level <= 6) return "Intermediate";
+            if (level <= 9) return "Advanced";
+            return "Expert";
         }
 
         // ------------------------------------------------------------
@@ -539,10 +604,43 @@
             if (!player) return;
 
             let dx = 0, dz = 0;
-            if (moveState.left) dx -= 1;
-            if (moveState.right) dx += 1;
-            if (moveState.forward) dz -= 1;
-            if (moveState.backward) dz += 1;
+            
+            // Use AI if enabled, otherwise use manual controls
+            if (useAI) {
+                // Calculate current meteor fall speed
+                const speedBoost = score * 0.15;
+                const meteorFallSpeed = baseMeteorSpeed + speedBoost;
+                
+                // Prepare meteor data with velocity for AI
+                const meteorData = meteors.map(m => ({
+                    position: { 
+                        x: m.position.x, 
+                        y: m.position.y, 
+                        z: m.position.z 
+                    },
+                    velocity: {
+                        x: 0,
+                        y: -meteorFallSpeed, // Meteors fall straight down
+                        z: 0
+                    }
+                }));
+                
+                // Get AI's suggested move with difficulty level
+                const move = computerAI.suggestMove(meteorData, {
+                    x: player.position.x,
+                    y: player.position.y,
+                    z: player.position.z
+                }, score, aiLevel);
+                
+                dx = move.dx || 0;
+                dz = move.dz || 0;
+            } else {
+                // Manual controls
+                if (moveState.left) dx -= 1;
+                if (moveState.right) dx += 1;
+                if (moveState.forward) dz -= 1;
+                if (moveState.backward) dz += 1;
+            }
 
             if (dx !== 0 || dz !== 0) {
                 const len = Math.sqrt(dx * dx + dz * dz);
