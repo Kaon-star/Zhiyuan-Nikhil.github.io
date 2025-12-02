@@ -105,7 +105,7 @@ class ComputerAI {
         const allScores = [];
         
         for (const dir of directions) {
-            const score = this.evaluatePath(dir, position, predictedMeteors, pathDuration, lookaheadPercent);
+            const score = this.evaluatePath(dir, position, predictedMeteors, pathDuration, lookaheadPercent, aiLevel);
             allScores.push({ name: dir.name, score: score });
             
             if (score > bestScore) {
@@ -151,9 +151,43 @@ class ComputerAI {
     }
 
     /**
+     * Returns true if the simulated movement along the direction would cross or end inside any platform hole.
+     * This checks the AI's movement path to avoid falling through holes.
+     */
+    pathContainsHole(direction, startPos, predictedMeteors, pathDuration, lookaheadPercent) {
+        const holeSpecs = [
+            { x: -6, z: 6, halfSize: 2.5 },
+            { x: 8,  z: -2, halfSize: 2.2 },
+            { x: 0,  z: -8, halfSize: 3.0 }
+        ];
+
+        const playerSpeed = 12;
+        const numSamples = 10;
+
+        // We'll check points along the path, including the start and end.
+        for (let i = 0; i <= numSamples; i++) {
+            const t = (i / numSamples) * pathDuration;
+            const x = startPos.x + direction.dx * playerSpeed * t;
+            const z = startPos.z + direction.dz * playerSpeed * t;
+
+            for (const hole of holeSpecs) {
+                if (
+                    x >= (hole.x - hole.halfSize) &&
+                    x <= (hole.x + hole.halfSize) &&
+                    z >= (hole.z - hole.halfSize) &&
+                    z <= (hole.z + hole.halfSize)
+                ) {
+                    return true; // Path crosses or ends inside this hole.
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
      * Evaluate a path by simulating movement along it
      */
-    evaluatePath(direction, startPos, predictedMeteors, pathDuration, lookaheadPercent) {
+    evaluatePath(direction, startPos, predictedMeteors, pathDuration, lookaheadPercent, aiLevel) {
         const playerSpeed = 12;
         const worldHalf = 9;
         
@@ -262,6 +296,10 @@ class ComputerAI {
             } else {
                 score -= 10; // Small penalty even with no threats
             }
+        }
+
+        if(this.pathContainsHole(direction, startPos, predictedMeteors, pathDuration, lookaheadPercent)) {
+            score -= 20 * aiLevel;
         }
         
         // Apply bounds penalty

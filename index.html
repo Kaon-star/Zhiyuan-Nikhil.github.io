@@ -211,6 +211,7 @@
 
         let isPrototypeMode = true;
         let isGameOver = false;
+        let isFalling = false;
         let score = 0;
         let lastTime = 0;
         let useAI = false; // Toggle for AI control
@@ -219,6 +220,15 @@
         const worldSize = 28;  // bigger arena
         const playerSpeed = 12;
         const baseMeteorSpeed = 8;
+        const fallSpeed = 15;
+        const fallThreshold = -5;
+        
+        // Holes positions (x, z, halfSize) - shared between platform and collision detection
+        const holeSpecs = [
+            { x: -6, z: 6, halfSize: 2.5 },
+            { x: 8,  z: -2, halfSize: 2.2 },
+            { x: 0,  z: -8, halfSize: 3.0 }
+        ];
         
         // Create AI instance
         const computerAI = new ComputerAI();
@@ -299,7 +309,35 @@
         }
 
         function createBaseWorld() {
-            const geo = new THREE.PlaneGeometry(worldSize, worldSize);
+            // Create platform with holes cut out
+            const half = worldSize * 0.5;
+            const shape = new THREE.Shape();
+            
+            // Define the outer rectangle of the platform
+            shape.moveTo(-half, -half);
+            shape.lineTo(half, -half);
+            shape.lineTo(half, half);
+            shape.lineTo(-half, half);
+            shape.lineTo(-half, -half);
+            
+            // Create hole paths
+            // Platform is rotated -90° around X, so shape coordinates map as:
+            // shape X → world X, shape Y → world -Z
+            const holePaths = holeSpecs.map(h => {
+                const hole = new THREE.Path();
+                const x = h.x;
+                const y = -h.z; // z in 3D world becomes -y in 2D shape (due to rotation)
+                hole.moveTo(x - h.halfSize, y - h.halfSize);
+                hole.lineTo(x + h.halfSize, y - h.halfSize);
+                hole.lineTo(x + h.halfSize, y + h.halfSize);
+                hole.lineTo(x - h.halfSize, y + h.halfSize);
+                hole.lineTo(x - h.halfSize, y - h.halfSize);
+                return hole;
+            });
+            
+            shape.holes = holePaths;
+            
+            const geo = new THREE.ShapeGeometry(shape);
             const mat = new THREE.MeshStandardMaterial({ color: 0x222222 });
             platform = new THREE.Mesh(geo, mat);
             platform.rotation.x = -Math.PI / 2;
@@ -346,24 +384,9 @@
                 walls.push(w);
             });
 
-            // Holes positions (x, z, halfSize)
-            const holeSpecs = [
-                { x: -6, z: 6, halfSize: 2.5 },
-                { x: 8,  z: -2, halfSize: 2.2 },
-                { x: 0,  z: -8, halfSize: 3.0 }
-            ];
-            const holeMat = new THREE.MeshStandardMaterial({
-                color: 0x050505,
-                metalness: 0.1,
-                roughness: 0.9
-            });
-
+            // Store hole data for collision detection (holes are cut from platform geometry)
             holeSpecs.forEach(h => {
-                const hg = new THREE.BoxGeometry(h.halfSize * 2, 0.05, h.halfSize * 2);
-                const mesh = new THREE.Mesh(hg, holeMat);
-                mesh.position.set(h.x, 0.01, h.z);
-                scene.add(mesh);
-                holes.push({ mesh, x: h.x, z: h.z, halfSize: h.halfSize });
+                holes.push({ mesh: null, x: h.x, z: h.z, halfSize: h.halfSize });
             });
         }
 
@@ -391,6 +414,7 @@
 
         function resetGameState() {
             isGameOver = false;
+            isFalling = false;
             score = 0;
             scoreDisplay.textContent = "Score: 0.0";
             statusMessage.textContent = "";
@@ -687,20 +711,44 @@
             const delta = lastTime ? t - lastTime : 0;
             lastTime = t;
 
+            // Always update player (handles falling even when game over)
+            updatePlayer(delta);
+            
             if (!isGameOver) {
-                updatePlayer(delta);
-                updateMeteors(delta);
                 checkCollisions();
 
                 score += delta;
                 scoreDisplay.textContent = "Score: " + score.toFixed(1);
             }
+            
+            // Always update meteors (even when game over)
+            updateMeteors(delta);
 
             renderer.render(scene, camera);
         }
 
         function updatePlayer(delta) {
             if (!player) return;
+
+            // Check if entire player body is in hole - game over immediately (no movement allowed)
+            const playerRadius = 0.9;
+            if (!isGameOver && isFullyInHole(player.position.x, player.position.z, playerRadius)) {
+                isGameOver = true;
+                isFalling = true;
+            }
+
+            // Disable movement when game over
+            if (isGameOver) {
+                // Continue falling if already falling
+                if (isFalling) {
+                    player.position.y -= fallSpeed * delta;
+                    if (player.position.y < -2 && !statusMessage.textContent.includes("Game over")) {
+                        const base = "Game over! Final score " + score.toFixed(1) + ".";
+                        statusMessage.textContent = base + " You fell into a hole! Press R or switch mode to restart.";
+                    }
+                }
+                return;
+            }
 
             // Input in "screen" space: ix = left/right, iz = up/down (forward/back)
             let ix = 0;
@@ -780,11 +828,6 @@
 
             player.rotation.z = THREE.MathUtils.lerp(player.rotation.z, targetTiltZ, 0.15);
             player.rotation.x = THREE.MathUtils.lerp(player.rotation.x, targetTiltX, 0.15);
-
-            // check if player is in any hole
-            if (!isGameOver && isInHole(player.position.x, player.position.z)) {
-                gameOver("You fell into a hole!");
-            }
         }
 
         function updateMeteors(delta) {
@@ -853,6 +896,27 @@
             for (const h of holes) {
                 if (Math.abs(x - h.x) < h.halfSize &&
                     Math.abs(z - h.z) < h.halfSize) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        function isFullyInHole(x, z, playerRadius) {
+            for (const h of holes) {
+                // Check if entire player body (center ± radius) is within hole bounds
+                const leftEdge = x - playerRadius;
+                const rightEdge = x + playerRadius;
+                const frontEdge = z - playerRadius;
+                const backEdge = z + playerRadius;
+                
+                const holeLeft = h.x - h.halfSize;
+                const holeRight = h.x + h.halfSize;
+                const holeFront = h.z - h.halfSize;
+                const holeBack = h.z + h.halfSize;
+                
+                if (leftEdge >= holeLeft && rightEdge <= holeRight &&
+                    frontEdge >= holeFront && backEdge <= holeBack) {
                     return true;
                 }
             }
