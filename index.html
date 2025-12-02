@@ -154,6 +154,16 @@
             <span style="font-size:12px;">AI:</span>
             <button id="btnAI">OFF</button>
         </div>
+        <div id="aiFeatures" style="margin-top:4px; font-size:11px; pointer-events:auto;">
+            <label style="display:block;">
+                <input type="checkbox" id="chkHoleAvoid" checked>
+                Hole avoidance
+            </label>
+            <label style="display:block; margin-top:2px;">
+                <input type="checkbox" id="chkThinkingTime" checked>
+                Thinking time
+            </label>
+        </div>
 
         <div id="scoreDisplay">Score: 0.0</div>
         <div id="statusMessage"></div>
@@ -180,9 +190,11 @@
         Mobile: use the on-screen arrows and AI button.
     </div>
 
-    <!-- THREE & GLTFLoader from CDN (0.154.0, has build/three.min.js) -->
-    <script src="https://unpkg.com/three@0.154.0/build/three.min.js"></script>
-    <script src="https://unpkg.com/three@0.154.0/examples/js/loaders/GLTFLoader.js"></script>
+    <!-- THREE & loaders from CDN (r126 pattern from StackOverflow answer; examples/js loaders attach to THREE) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r126/three.min.js" crossorigin="anonymous"></script>
+    <script src="https://unpkg.com/three@0.126.0/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="https://unpkg.com/three@0.126.0/examples/js/loaders/MTLLoader.js"></script>
+    <script src="https://unpkg.com/three@0.126.0/examples/js/loaders/OBJLoader.js"></script>
     
     <!-- AI Computer Player -->
     <script src="computer.js"></script>
@@ -235,6 +247,9 @@
 
         let textureLoader;
         let gltfLoader;
+        let mtlLoader;
+        let objLoader;
+        let asteroidTemplate = null; // loaded OBJ for full-mode meteors
 
         const scoreDisplay = document.getElementById("scoreDisplay");
         const statusMessage = document.getElementById("statusMessage");
@@ -242,6 +257,8 @@
         const btnPrototype = document.getElementById("btnPrototype");
         const btnFull = document.getElementById("btnFull");
         const btnAI = document.getElementById("btnAI");
+        const chkHoleAvoid = document.getElementById("chkHoleAvoid");
+        const chkThinkingTime = document.getElementById("chkThinkingTime");
         const canvasContainer = document.getElementById("canvasContainer");
 
         // Camera-aligned movement basis
@@ -285,13 +302,32 @@
 
             textureLoader = new THREE.TextureLoader();
 
-            if (THREE.GLTFLoader) {
+            if (typeof THREE !== "undefined" && THREE.GLTFLoader) {
                 gltfLoader = new THREE.GLTFLoader();
             } else if (typeof GLTFLoader !== "undefined") {
                 gltfLoader = new GLTFLoader();
             } else {
                 console.warn("GLTFLoader not found; full mode will use fallback player.");
                 gltfLoader = null;
+            }
+
+            // OBJ / MTL loaders for asteroid model in full mode
+            if (typeof THREE !== "undefined" && THREE.MTLLoader) {
+                mtlLoader = new THREE.MTLLoader();
+            } else if (typeof MTLLoader !== "undefined") {
+                mtlLoader = new MTLLoader();
+            } else {
+                console.warn("MTLLoader not found; full-mode asteroids will fall back to spheres.");
+                mtlLoader = null;
+            }
+
+            if (typeof THREE !== "undefined" && THREE.OBJLoader) {
+                objLoader = new THREE.OBJLoader();
+            } else if (typeof OBJLoader !== "undefined") {
+                objLoader = new OBJLoader();
+            } else {
+                console.warn("OBJLoader not found; full-mode asteroids will fall back to spheres.");
+                objLoader = null;
             }
 
             createBaseWorld();
@@ -338,7 +374,7 @@
             shape.holes = holePaths;
             
             const geo = new THREE.ShapeGeometry(shape);
-            const mat = new THREE.MeshStandardMaterial({ color: 0x222222 });
+            const mat = new THREE.MeshStandardMaterial({ color: 0x777777 });
             platform = new THREE.Mesh(geo, mat);
             platform.rotation.x = -Math.PI / 2;
             platform.receiveShadow = true;
@@ -496,30 +532,21 @@
                 );
             }
 
-            const meteorGeo = new THREE.SphereGeometry(0.8, 24, 24);
             const shadowGeo = new THREE.CircleGeometry(0.9, 16);
 
-            // TODO: change path if your texture is elsewhere
-            const rockTexture = textureLoader.load(
-                "assets/textures/rock.jpg",
-                function () {},
-                undefined,
-                function () {
-                    console.warn("Could not load rock texture, using plain color.");
-                }
-            );
-
-            for (let i = 0; i < meteorCount; i++) {
-                const mat = new THREE.MeshStandardMaterial({
-                    map: rockTexture,
-                    color: 0xffffff
+            // Helper to create a meteor + shadow from a given mesh prototype
+            function spawnMeteorFromPrototype(prototype) {
+                const mesh = prototype.clone();
+                mesh.traverse(obj => {
+                    if (obj.isMesh) {
+                        obj.castShadow = true;
+                        obj.receiveShadow = true;
+                    }
                 });
-                const mesh = new THREE.Mesh(meteorGeo, mat);
                 resetMeteorPosition(mesh, true);
                 scene.add(mesh);
                 meteors.push(mesh);
 
-                // NEW: shadow disk
                 const shadowMat = new THREE.MeshBasicMaterial({
                     color: 0x000000,
                     transparent: true,
@@ -530,6 +557,83 @@
                 shadow.position.set(mesh.position.x, 0.02, mesh.position.z);
                 scene.add(shadow);
                 meteorShadows.push(shadow);
+            }
+
+            // If we've already loaded the asteroid OBJ once, just clone it.
+            if (asteroidTemplate) {
+                for (let i = 0; i < meteorCount; i++) {
+                    spawnMeteorFromPrototype(asteroidTemplate);
+                }
+                return;
+            }
+
+            // Try to load the asteroid OBJ / MTL for full-mode meteors.
+            if (mtlLoader && objLoader) {
+                mtlLoader.load(
+                    "assets/Asteroid_2b.mtl",
+                    function (materials) {
+                        materials.preload();
+                        objLoader.setMaterials(materials);
+                        objLoader.load(
+                            "assets/Asteroid_2b.obj",
+                            function (obj) {
+                                asteroidTemplate = obj;
+                                for (let i = 0; i < meteorCount; i++) {
+                                    spawnMeteorFromPrototype(asteroidTemplate);
+                                }
+                            },
+                            undefined,
+                            function (err) {
+                                console.warn("Could not load asteroid OBJ, falling back to rock spheres.", err);
+                                createFallbackRockMeteors();
+                            }
+                        );
+                    },
+                    undefined,
+                    function (err) {
+                        console.warn("Could not load asteroid MTL, falling back to rock spheres.", err);
+                        createFallbackRockMeteors();
+                    }
+                );
+            } else {
+                // If loaders are unavailable, use the original rock-textured spheres.
+                createFallbackRockMeteors();
+            }
+
+            // Original rock-sphere implementation kept as a fallback.
+            function createFallbackRockMeteors() {
+                const meteorGeo = new THREE.SphereGeometry(0.8, 24, 24);
+
+                const rockTexture = textureLoader.load(
+                    "assets/textures/rock.jpg",
+                    function () {},
+                    undefined,
+                    function () {
+                        console.warn("Could not load rock texture, using plain color.");
+                    }
+                );
+
+                for (let i = 0; i < meteorCount; i++) {
+                    const mat = new THREE.MeshStandardMaterial({
+                        map: rockTexture,
+                        color: 0xffffff
+                    });
+                    const mesh = new THREE.Mesh(meteorGeo, mat);
+                    resetMeteorPosition(mesh, true);
+                    scene.add(mesh);
+                    meteors.push(mesh);
+
+                    const shadowMat = new THREE.MeshBasicMaterial({
+                        color: 0x000000,
+                        transparent: true,
+                        opacity: 0.35
+                    });
+                    const shadow = new THREE.Mesh(shadowGeo, shadowMat);
+                    shadow.rotation.x = -Math.PI / 2;
+                    shadow.position.set(mesh.position.x, 0.02, mesh.position.z);
+                    scene.add(shadow);
+                    meteorShadows.push(shadow);
+                }
             }
         }
 
@@ -552,7 +656,8 @@
 
         function setPrototypeMaterials() {
             if (platform && platform.material) {
-                platform.material = new THREE.MeshStandardMaterial({ color: 0x222222 });
+                // Gray floor in prototype mode
+                platform.material = new THREE.MeshStandardMaterial({ color: 0x777777 });
             }
             if (skySphere && skySphere.material) {
                 skySphere.material = new THREE.MeshBasicMaterial({
@@ -563,21 +668,11 @@
         }
 
         function setFullMaterialsAndTextures() {
-            const floorTex = textureLoader.load(
-                "assets/textures/metal_floor.jpg",
-                function () {},
-                undefined,
-                function () {
-                    console.warn("Could not load floor texture, using color.");
-                }
-            );
-
             if (platform && platform.material) {
                 platform.material = new THREE.MeshStandardMaterial({
-                    map: floorTex,
-                    color: 0xffffff,
-                    metalness: 0.4,
-                    roughness: 0.6
+                    color: 0x999999,   // light gray floor color
+                    metalness: 0.55,  // a bit more reflective
+                    roughness: 0.45   // slightly smoother surface
                 });
             }
 
@@ -599,6 +694,18 @@
             btnPrototype.addEventListener("click", () => setMode(true));
             btnFull.addEventListener("click", () => setMode(false));
             btnAI.addEventListener("click", toggleAI);
+
+            // AI feature toggles
+            if (chkHoleAvoid) {
+                chkHoleAvoid.addEventListener("change", () => {
+                    computerAI.setHoleAvoidanceEnabled(chkHoleAvoid.checked);
+                });
+            }
+            if (chkThinkingTime) {
+                chkThinkingTime.addEventListener("change", () => {
+                    computerAI.setThinkingTimeEnabled(chkThinkingTime.checked);
+                });
+            }
 
             const controlButtons = document.querySelectorAll("#controls button[data-dir]");
             controlButtons.forEach(btn => {
