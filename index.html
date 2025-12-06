@@ -47,15 +47,15 @@
             opacity: 0.9;
         }
 
-        #modeToggle {
+        .toggleRow {
             display: flex;
             align-items: center;
-            gap: 4px;
+            gap: 6px;
             margin-bottom: 6px;
             pointer-events: auto;
         }
 
-        #modeToggle button {
+        .toggleRow button {
             padding: 4px 8px;
             border-radius: 4px;
             border: 1px solid #666;
@@ -65,7 +65,7 @@
             cursor: pointer;
         }
 
-        #modeToggle button.active {
+        .toggleRow button.active {
             background: #4caf50;
             border-color: #4caf50;
         }
@@ -79,7 +79,7 @@
             font-size: 13px;
             color: #ffcc66;
             min-height: 1.2em;
-            max-width: 260px;
+            max-width: 280px;
         }
 
         #controls {
@@ -116,7 +116,7 @@
             position: fixed;
             bottom: 12px;
             left: 12px;
-            max-width: 320px;
+            max-width: 360px;
             font-size: 11px;
             background: rgba(0, 0, 0, 0.6);
             padding: 6px 8px;
@@ -144,20 +144,14 @@
             Group: Awesome Meteors • ID: <strong>1234</strong>
         </div>
 
-        <div id="modeToggle">
+        <div class="toggleRow">
             <span style="font-size:12px;">Mode:</span>
             <button id="btnPrototype" class="active">Prototype</button>
             <button id="btnFull">Full</button>
         </div>
-        
-        <div id="modeToggle">
-            <span style="font-size:12px;">AI:</span>
-            <button id="btnAI">OFF</button>
-        </div>
 
         <div id="scoreDisplay">Score: 0.0</div>
         <div id="statusMessage"></div>
-        <div id="aiLevelDisplay" style="font-size:12px; margin-top:4px; opacity:0.8;">AI Level: 5 (Intermediate)</div>
     </div>
 
     <div id="controls">
@@ -176,73 +170,107 @@
 
     <div id="instructions">
         Keyboard: WASD / Arrow keys to move, R to restart.<br />
-        AI: Press I to toggle, [ ] to adjust level (1-10).<br />
-        Mobile: use the on-screen arrows and AI button.
+        Mobile: use the on-screen arrows.<br />
+        Infinite arena + enemies + meteor scaling enabled.
     </div>
 
-    <!-- THREE & GLTFLoader from CDN (0.154.0, has build/three.min.js) -->
+    <!-- THREE & GLTFLoader -->
     <script src="https://unpkg.com/three@0.154.0/build/three.min.js"></script>
     <script src="https://unpkg.com/three@0.154.0/examples/js/loaders/GLTFLoader.js"></script>
-    
-    <!-- AI Computer Player -->
-    <script src="computer.js"></script>
 
     <script>
     window.addEventListener("load", function () {
         // ------------------------------------------------------------
-        // Global state
+        // Scene / renderer
         // ------------------------------------------------------------
         let scene, camera, renderer;
 
+        // ------------------------------------------------------------
+        // Player
+        // ------------------------------------------------------------
         let player = null;
+
+        // ------------------------------------------------------------
+        // Meteors + shadow disks
+        // ------------------------------------------------------------
         let meteors = [];
-        let meteorShadows = []; // NEW: shadow disk for each meteor
-        let platform = null;
-        let skySphere = null;
-        let walls = [];
-        let holes = []; // {mesh, x, z, halfSize}
+        let meteorShadows = [];
 
-        const moveState = {
-            left: false,
-            right: false,
-            forward: false,
-            backward: false
-        };
+        // ------------------------------------------------------------
+        // Enemies (simple chasers)
+        // ------------------------------------------------------------
+        let enemies = [];
+        let activeEnemyCount = 0;
 
-        let isPrototypeMode = true;
-        let isGameOver = false;
-        let isFalling = false;
-        let score = 0;
-        let lastTime = 0;
-        let useAI = false; // Toggle for AI control
-        let aiLevel = 5; // AI difficulty level (1-10)
-        const meteorCount = 24;
-        const worldSize = 28;  // bigger arena
-        const playerSpeed = 12;
-        const baseMeteorSpeed = 8;
-        const fallSpeed = 15;
-        const fallThreshold = -5;
-        
-        // Holes positions (x, z, halfSize) - shared between platform and collision detection
-        const holeSpecs = [
-            { x: -6, z: 6, halfSize: 2.5 },
-            { x: 8,  z: -2, halfSize: 2.2 },
-            { x: 0,  z: -8, halfSize: 3.0 }
-        ];
-        
-        // Create AI instance
-        const computerAI = new ComputerAI();
+        // ------------------------------------------------------------
+        // Infinite floor tiling
+        // ------------------------------------------------------------
+        let floorGroup = null;
+        let floorTiles = [];
+        let gridHelper = null;
 
+        // ------------------------------------------------------------
+        // Loaders
+        // ------------------------------------------------------------
         let textureLoader;
         let gltfLoader;
 
+        // ------------------------------------------------------------
+        // UI
+        // ------------------------------------------------------------
         const scoreDisplay = document.getElementById("scoreDisplay");
         const statusMessage = document.getElementById("statusMessage");
-        const aiLevelDisplay = document.getElementById("aiLevelDisplay");
         const btnPrototype = document.getElementById("btnPrototype");
         const btnFull = document.getElementById("btnFull");
-        const btnAI = document.getElementById("btnAI");
         const canvasContainer = document.getElementById("canvasContainer");
+
+        // ------------------------------------------------------------
+        // Controls
+        // ------------------------------------------------------------
+        const moveState = { left:false, right:false, forward:false, backward:false };
+
+        // ------------------------------------------------------------
+        // Game state
+        // ------------------------------------------------------------
+        let isPrototypeMode = true;
+        let isGameOver = false;
+        let score = 0;
+        let lastTime = 0;
+
+        // ------------------------------------------------------------
+        // Infinite arena settings
+        // ------------------------------------------------------------
+        const tileSize = 32;      // plane size per tile
+        const tileRadius = 1;    // 3x3 total
+
+        // ------------------------------------------------------------
+        // Difficulty scaling
+        // ------------------------------------------------------------
+        const baseMeteorCount = 24;
+        const maxMeteorCount  = 90;
+
+        const enemyStartTime  = 8;   // seconds
+        const maxEnemyCount   = 18;
+
+        // ------------------------------------------------------------
+        // Movement + speed
+        // ------------------------------------------------------------
+        const playerSpeed = 12;
+        const baseMeteorSpeed = 8;
+
+        // Spawn relative to player
+        const meteorSpawnRadiusMin = 6;
+        const meteorSpawnRadiusMax = 18;
+
+        const enemySpawnRadiusMin = 12;
+        const enemySpawnRadiusMax = 22;
+
+        // ------------------------------------------------------------
+        // Camera follow
+        // ------------------------------------------------------------
+        const cameraOffset = new THREE.Vector3(26, 24, 26);
+        const cameraTargetPos = new THREE.Vector3();
+        const cameraLookAtPos = new THREE.Vector3();
 
         // Camera-aligned movement basis
         const camForward = new THREE.Vector3();
@@ -250,11 +278,14 @@
         const tmpDir = new THREE.Vector3();
         const worldUp = new THREE.Vector3(0, 1, 0);
 
+        const tmpV1 = new THREE.Vector3();
+        const tmpV2 = new THREE.Vector3();
+
         init();
         animate(0);
 
         // ------------------------------------------------------------
-        // Initialization
+        // Init
         // ------------------------------------------------------------
         function init() {
             renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -269,16 +300,13 @@
                 60,
                 window.innerWidth / window.innerHeight,
                 0.1,
-                200
+                300
             );
-            // fixed 2.5D angle (corner view)
             camera.position.set(26, 24, 26);
             camera.lookAt(0, 0, 0);
             computeCameraBasis();
 
-            const ambient = new THREE.AmbientLight(0xffffff, 0.5);
-            scene.add(ambient);
-
+            scene.add(new THREE.AmbientLight(0xffffff, 0.5));
             const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
             dirLight.position.set(16, 26, 10);
             scene.add(dirLight);
@@ -290,104 +318,106 @@
             } else if (typeof GLTFLoader !== "undefined") {
                 gltfLoader = new GLTFLoader();
             } else {
-                console.warn("GLTFLoader not found; full mode will use fallback player.");
                 gltfLoader = null;
             }
 
-            createBaseWorld();
+            createSky();
+            createInfiniteFloor();
+
             setMode(true);
             setupInput();
+
             window.addEventListener("resize", onWindowResize);
         }
 
         function computeCameraBasis() {
-            // Camera forward in world coordinates
             camera.getWorldDirection(tmpDir);
-            // Flatten to XZ plane
-            camForward.set(tmpDir.x, 0, tmpDir.z).normalize();        // "up" on screen
-            camRight.crossVectors(camForward, worldUp).normalize();   // "right" on screen
+            camForward.set(tmpDir.x, 0, tmpDir.z).normalize();
+            camRight.crossVectors(camForward, worldUp).normalize();
         }
 
-        function createBaseWorld() {
-            // Create platform with holes cut out
-            const half = worldSize * 0.5;
-            const shape = new THREE.Shape();
-            
-            // Define the outer rectangle of the platform
-            shape.moveTo(-half, -half);
-            shape.lineTo(half, -half);
-            shape.lineTo(half, half);
-            shape.lineTo(-half, half);
-            shape.lineTo(-half, -half);
-            
-            // Create hole paths
-            // Platform is rotated -90° around X, so shape coordinates map as:
-            // shape X → world X, shape Y → world -Z
-            const holePaths = holeSpecs.map(h => {
-                const hole = new THREE.Path();
-                const x = h.x;
-                const y = -h.z; // z in 3D world becomes -y in 2D shape (due to rotation)
-                hole.moveTo(x - h.halfSize, y - h.halfSize);
-                hole.lineTo(x + h.halfSize, y - h.halfSize);
-                hole.lineTo(x + h.halfSize, y + h.halfSize);
-                hole.lineTo(x - h.halfSize, y + h.halfSize);
-                hole.lineTo(x - h.halfSize, y - h.halfSize);
-                return hole;
-            });
-            
-            shape.holes = holePaths;
-            
-            const geo = new THREE.ShapeGeometry(shape);
-            const mat = new THREE.MeshStandardMaterial({ color: 0x222222 });
-            platform = new THREE.Mesh(geo, mat);
-            platform.rotation.x = -Math.PI / 2;
-            platform.receiveShadow = true;
-            scene.add(platform);
-
-            // NEW: grid helper on top of the platform for depth cues
-            const grid = new THREE.GridHelper(worldSize, 8, 0x444444, 0x333333);
-            grid.position.y = 0.02;
-            scene.add(grid);
-
-            const skyGeo = new THREE.SphereGeometry(80, 32, 32);
+        function createSky() {
+            const skyGeo = new THREE.SphereGeometry(120, 32, 32);
             const skyMat = new THREE.MeshBasicMaterial({
                 color: 0x050818,
                 side: THREE.BackSide
             });
-            skySphere = new THREE.Mesh(skyGeo, skyMat);
-            scene.add(skySphere);
-
-            createWallsAndHoles();
+            const sky = new THREE.Mesh(skyGeo, skyMat);
+            scene.add(sky);
         }
 
-        function createWallsAndHoles() {
-            const half = worldSize * 0.5;
-            const wallHeight = 2.2;
-            const wallThickness = 0.6;
-            const wallMat = new THREE.MeshStandardMaterial({ color: 0x555555 });
+        // ------------------------------------------------------------
+        // Infinite floor: 3x3 reusable tiles
+        // ------------------------------------------------------------
+        function createInfiniteFloor() {
+            floorGroup = new THREE.Group();
+            floorTiles = [];
 
-            const wallGeoZ = new THREE.BoxGeometry(worldSize, wallHeight, wallThickness);
-            const wallGeoX = new THREE.BoxGeometry(wallThickness, wallHeight, worldSize);
+            const floorGeo = new THREE.PlaneGeometry(tileSize, tileSize);
+            const floorMat = new THREE.MeshStandardMaterial({ color: 0x222222 });
 
-            const north = new THREE.Mesh(wallGeoZ, wallMat);
-            north.position.set(0, wallHeight / 2, -half);
-            const south = north.clone();
-            south.position.z = half;
+            for (let ox = -tileRadius; ox <= tileRadius; ox++) {
+                for (let oz = -tileRadius; oz <= tileRadius; oz++) {
+                    const tile = new THREE.Mesh(floorGeo, floorMat);
+                    tile.rotation.x = -Math.PI / 2;
+                    tile.userData.offsetX = ox;
+                    tile.userData.offsetZ = oz;
+                    tile.position.set(ox * tileSize, 0, oz * tileSize);
+                    floorGroup.add(tile);
+                    floorTiles.push(tile);
+                }
+            }
 
-            const west = new THREE.Mesh(wallGeoX, wallMat);
-            west.position.set(-half, wallHeight / 2, 0);
-            const east = west.clone();
-            east.position.x = half;
+            scene.add(floorGroup);
 
-            [north, south, west, east].forEach(w => {
-                scene.add(w);
-                walls.push(w);
-            });
+            const gridSize = tileSize * (tileRadius * 2 + 1);
+            gridHelper = new THREE.GridHelper(gridSize, (tileRadius * 2 + 1) * 8, 0x444444, 0x333333);
+            gridHelper.position.y = 0.02;
+            scene.add(gridHelper);
+        }
 
-            // Store hole data for collision detection (holes are cut from platform geometry)
-            holeSpecs.forEach(h => {
-                holes.push({ mesh: null, x: h.x, z: h.z, halfSize: h.halfSize });
-            });
+        function updateInfiniteFloor() {
+            if (!player) return;
+
+            const cx = Math.floor(player.position.x / tileSize);
+            const cz = Math.floor(player.position.z / tileSize);
+
+            for (const tile of floorTiles) {
+                const ox = tile.userData.offsetX;
+                const oz = tile.userData.offsetZ;
+                tile.position.x = (cx + ox) * tileSize;
+                tile.position.z = (cz + oz) * tileSize;
+            }
+
+            if (gridHelper) {
+                gridHelper.position.x = cx * tileSize;
+                gridHelper.position.z = cz * tileSize;
+            }
+        }
+
+        // ------------------------------------------------------------
+        // Camera follow
+        // ------------------------------------------------------------
+        function updateCameraFollow(delta) {
+            if (!player) return;
+
+            cameraTargetPos.set(
+                player.position.x + cameraOffset.x,
+                cameraOffset.y,
+                player.position.z + cameraOffset.z
+            );
+
+            if (delta > 0) {
+                const alpha = 1 - Math.pow(0.001, delta);
+                camera.position.lerp(cameraTargetPos, alpha);
+            } else {
+                camera.position.copy(cameraTargetPos);
+            }
+
+            cameraLookAtPos.set(player.position.x, 0, player.position.z);
+            camera.lookAt(cameraLookAtPos);
+
+            computeCameraBasis();
         }
 
         // ------------------------------------------------------------
@@ -402,135 +432,70 @@
             clearDynamicObjects();
 
             if (isPrototypeMode) {
-                createPrototypePlayerAndMeteors();
-                setPrototypeMaterials();
-                statusMessage.textContent = "Prototype mode: primitive geometries only.";
+                createPrototypePlayer();
             } else {
-                createFullPlayerAndMeteors();
-                setFullMaterialsAndTextures();
-                statusMessage.textContent = "Full mode: using loaded model(s) and textures.";
+                createFullPlayer();
             }
+
+            ensureMeteors(baseMeteorCount);
+            ensureEnemies(0);
+
+            updateCameraFollow(0);
+            statusMessage.textContent = isPrototypeMode ? "Prototype mode." : "Full mode.";
         }
 
         function resetGameState() {
             isGameOver = false;
-            isFalling = false;
             score = 0;
+            lastTime = 0;
             scoreDisplay.textContent = "Score: 0.0";
             statusMessage.textContent = "";
-            
-            // Reset AI path planning
-            computerAI.reset();
         }
 
         function clearDynamicObjects() {
-            if (player) {
-                scene.remove(player);
-                player = null;
-            }
-            meteors.forEach(m => scene.remove(m));
-            meteors = [];
+            if (player) { scene.remove(player); player = null; }
 
-            // NEW: clear shadows
-            meteorShadows.forEach(s => scene.remove(s));
+            for (const m of meteors) scene.remove(m);
+            for (const s of meteorShadows) scene.remove(s);
+            meteors = [];
             meteorShadows = [];
+
+            for (const e of enemies) scene.remove(e);
+            enemies = [];
+            activeEnemyCount = 0;
         }
 
-        function createPrototypePlayerAndMeteors() {
-            const playerGeo = new THREE.BoxGeometry(1.5, 1, 2);
-            const playerMat = new THREE.MeshStandardMaterial({ color: 0x4caf50 });
-            player = new THREE.Mesh(playerGeo, playerMat);
+        // ------------------------------------------------------------
+        // Player
+        // ------------------------------------------------------------
+        function createPrototypePlayer() {
+            const geo = new THREE.BoxGeometry(1.5, 1, 2);
+            const mat = new THREE.MeshStandardMaterial({ color: 0x4caf50 });
+            player = new THREE.Mesh(geo, mat);
             player.position.set(0, 1, 0);
             scene.add(player);
-
-            const meteorGeo = new THREE.SphereGeometry(0.8, 16, 16);
-            const shadowGeo = new THREE.CircleGeometry(0.9, 16);
-
-            for (let i = 0; i < meteorCount; i++) {
-                const mat = new THREE.MeshStandardMaterial({ color: 0xff6347 });
-                const mesh = new THREE.Mesh(meteorGeo, mat);
-                resetMeteorPosition(mesh, true);
-                scene.add(mesh);
-                meteors.push(mesh);
-
-                // NEW: shadow disk
-                const shadowMat = new THREE.MeshBasicMaterial({
-                    color: 0x000000,
-                    transparent: true,
-                    opacity: 0.35
-                });
-                const shadow = new THREE.Mesh(shadowGeo, shadowMat);
-                shadow.rotation.x = -Math.PI / 2;
-                shadow.position.set(mesh.position.x, 0.02, mesh.position.z);
-                scene.add(shadow);
-                meteorShadows.push(shadow);
-            }
         }
 
-        function createFullPlayerAndMeteors() {
-            const fallbackPlayer = createFallbackFullPlayer();
-            player = fallbackPlayer;
+        function createFullPlayer() {
+            const fallback = createFallbackFullPlayer();
+            player = fallback;
             scene.add(player);
 
-            if (gltfLoader) {
-                // TODO: change path to your real .glb model
-                gltfLoader.load(
-                    "assets/models/spaceship.glb",
-                    function (gltf) {
-                        if (player) scene.remove(player);
-                        player = gltf.scene;
-                        player.traverse(obj => {
-                            if (obj.isMesh) {
-                                obj.castShadow = true;
-                                obj.receiveShadow = true;
-                            }
-                        });
-                        player.scale.set(1.8, 1.8, 1.8);
-                        player.position.set(0, 1, 0);
-                        scene.add(player);
-                    },
-                    undefined,
-                    function (err) {
-                        console.warn("Could not load spaceship model, using fallback rocket.", err);
-                    }
-                );
-            }
+            if (!gltfLoader) return;
 
-            const meteorGeo = new THREE.SphereGeometry(0.8, 24, 24);
-            const shadowGeo = new THREE.CircleGeometry(0.9, 16);
-
-            // TODO: change path if your texture is elsewhere
-            const rockTexture = textureLoader.load(
-                "assets/textures/rock.jpg",
-                function () {},
+            gltfLoader.load(
+                "assets/models/spaceship.glb",
+                (gltf) => {
+                    if (player) scene.remove(player);
+                    player = gltf.scene;
+                    player.scale.set(1.8, 1.8, 1.8);
+                    player.position.set(0, 1, 0);
+                    scene.add(player);
+                    updateCameraFollow(0);
+                },
                 undefined,
-                function () {
-                    console.warn("Could not load rock texture, using plain color.");
-                }
+                () => {}
             );
-
-            for (let i = 0; i < meteorCount; i++) {
-                const mat = new THREE.MeshStandardMaterial({
-                    map: rockTexture,
-                    color: 0xffffff
-                });
-                const mesh = new THREE.Mesh(meteorGeo, mat);
-                resetMeteorPosition(mesh, true);
-                scene.add(mesh);
-                meteors.push(mesh);
-
-                // NEW: shadow disk
-                const shadowMat = new THREE.MeshBasicMaterial({
-                    color: 0x000000,
-                    transparent: true,
-                    opacity: 0.35
-                });
-                const shadow = new THREE.Mesh(shadowGeo, shadowMat);
-                shadow.rotation.x = -Math.PI / 2;
-                shadow.position.set(mesh.position.x, 0.02, mesh.position.z);
-                scene.add(shadow);
-                meteorShadows.push(shadow);
-            }
         }
 
         function createFallbackFullPlayer() {
@@ -550,47 +515,92 @@
             return group;
         }
 
-        function setPrototypeMaterials() {
-            if (platform && platform.material) {
-                platform.material = new THREE.MeshStandardMaterial({ color: 0x222222 });
+        // ------------------------------------------------------------
+        // Meteors (pooled)
+        // ------------------------------------------------------------
+        function ensureMeteors(count) {
+            count = Math.min(count, maxMeteorCount);
+
+            const meteorGeo = isPrototypeMode
+                ? new THREE.SphereGeometry(0.8, 12, 12)
+                : new THREE.SphereGeometry(0.8, 18, 18);
+
+            const shadowGeo = new THREE.CircleGeometry(0.9, 14);
+
+            let meteorMat;
+            if (isPrototypeMode) {
+                meteorMat = new THREE.MeshStandardMaterial({ color: 0xff6347 });
+            } else {
+                const rockTexture = textureLoader.load("assets/textures/rock.jpg");
+                meteorMat = new THREE.MeshStandardMaterial({ map: rockTexture, color: 0xffffff });
             }
-            if (skySphere && skySphere.material) {
-                skySphere.material = new THREE.MeshBasicMaterial({
-                    color: 0x050818,
-                    side: THREE.BackSide
+
+            while (meteors.length < count) {
+                const m = new THREE.Mesh(meteorGeo, meteorMat);
+                resetMeteorNearPlayer(m, true);
+                scene.add(m);
+                meteors.push(m);
+
+                const shadowMat = new THREE.MeshBasicMaterial({
+                    color: 0x000000,
+                    transparent: true,
+                    opacity: 0.35
                 });
+                const s = new THREE.Mesh(shadowGeo, shadowMat);
+                s.rotation.x = -Math.PI / 2;
+                s.position.y = 0.02;
+                scene.add(s);
+                meteorShadows.push(s);
             }
         }
 
-        function setFullMaterialsAndTextures() {
-            const floorTex = textureLoader.load(
-                "assets/textures/metal_floor.jpg",
-                function () {},
-                undefined,
-                function () {
-                    console.warn("Could not load floor texture, using color.");
-                }
-            );
+        function resetMeteorNearPlayer(meteor, randomHeight) {
+            const centerX = player ? player.position.x : 0;
+            const centerZ = player ? player.position.z : 0;
 
-            if (platform && platform.material) {
-                platform.material = new THREE.MeshStandardMaterial({
-                    map: floorTex,
-                    color: 0xffffff,
-                    metalness: 0.4,
-                    roughness: 0.6
-                });
-            }
+            const angle = Math.random() * Math.PI * 2;
+            const dist = THREE.MathUtils.randFloat(meteorSpawnRadiusMin, meteorSpawnRadiusMax);
 
-            if (skySphere && skySphere.material) {
-                skySphere.material = new THREE.MeshBasicMaterial({
-                    color: 0x050818,
-                    side: THREE.BackSide
-                });
-            }
+            meteor.position.x = centerX + Math.cos(angle) * dist;
+            meteor.position.z = centerZ + Math.sin(angle) * dist;
+            meteor.position.y = randomHeight
+                ? THREE.MathUtils.randFloat(8, 26)
+                : THREE.MathUtils.randFloat(14, 28);
         }
 
         // ------------------------------------------------------------
-        // Input handling
+        // Enemies (pooled)
+        // ------------------------------------------------------------
+        function ensureEnemies(count) {
+            count = Math.min(count, maxEnemyCount);
+
+            const enemyGeo = new THREE.BoxGeometry(1.4, 1.2, 1.4);
+            const enemyMat = new THREE.MeshStandardMaterial({ color: 0xff4444 });
+
+            while (enemies.length < count) {
+                const e = new THREE.Mesh(enemyGeo, enemyMat);
+                e.position.y = 0.6;
+                spawnEnemyNearPlayer(e);
+                scene.add(e);
+                enemies.push(e);
+            }
+
+            activeEnemyCount = Math.min(count, enemies.length);
+        }
+
+        function spawnEnemyNearPlayer(enemy) {
+            const centerX = player ? player.position.x : 0;
+            const centerZ = player ? player.position.z : 0;
+
+            const angle = Math.random() * Math.PI * 2;
+            const dist = THREE.MathUtils.randFloat(enemySpawnRadiusMin, enemySpawnRadiusMax);
+
+            enemy.position.x = centerX + Math.cos(angle) * dist;
+            enemy.position.z = centerZ + Math.sin(angle) * dist;
+        }
+
+        // ------------------------------------------------------------
+        // Input
         // ------------------------------------------------------------
         function setupInput() {
             window.addEventListener("keydown", onKeyDown);
@@ -598,29 +608,21 @@
 
             btnPrototype.addEventListener("click", () => setMode(true));
             btnFull.addEventListener("click", () => setMode(false));
-            btnAI.addEventListener("click", toggleAI);
 
             const controlButtons = document.querySelectorAll("#controls button[data-dir]");
             controlButtons.forEach(btn => {
                 const dir = btn.getAttribute("data-dir");
 
-                function pressHandler(e) {
-                    e.preventDefault();
-                    setMoveState(dir, true);
-                }
+                const press = (e) => { e.preventDefault(); setMoveState(dir, true); };
+                const release = (e) => { e.preventDefault(); setMoveState(dir, false); };
 
-                function releaseHandler(e) {
-                    e.preventDefault();
-                    setMoveState(dir, false);
-                }
+                btn.addEventListener("mousedown", press);
+                btn.addEventListener("mouseup", release);
+                btn.addEventListener("mouseleave", release);
 
-                btn.addEventListener("mousedown", pressHandler);
-                btn.addEventListener("mouseup", releaseHandler);
-                btn.addEventListener("mouseleave", releaseHandler);
-
-                btn.addEventListener("touchstart", pressHandler, { passive: false });
-                btn.addEventListener("touchend", releaseHandler, { passive: false });
-                btn.addEventListener("touchcancel", releaseHandler, { passive: false });
+                btn.addEventListener("touchstart", press, { passive:false });
+                btn.addEventListener("touchend", release, { passive:false });
+                btn.addEventListener("touchcancel", release, { passive:false });
             });
         }
 
@@ -631,30 +633,7 @@
             if (e.key === "ArrowDown" || e.key === "s" || e.key === "S") moveState.backward = true;
 
             if (e.key === "r" || e.key === "R") {
-                resetGameState();
-                clearDynamicObjects();
-                if (isPrototypeMode) {
-                    createPrototypePlayerAndMeteors();
-                    setPrototypeMaterials();
-                } else {
-                    createFullPlayerAndMeteors();
-                    setFullMaterialsAndTextures();
-                }
-            }
-            
-            if (e.key === "i" || e.key === "I") {
-                useAI = !useAI;
-                updateAIStatus();
-            }
-            
-            // AI level controls
-            if (e.key === "[" || e.key === "{") {
-                aiLevel = Math.max(1, aiLevel - 1);
-                updateAIStatus();
-            }
-            if (e.key === "]" || e.key === "}") {
-                aiLevel = Math.min(10, aiLevel + 1);
-                updateAIStatus();
+                setMode(isPrototypeMode);
             }
         }
 
@@ -671,157 +650,89 @@
             if (dir === "up") moveState.forward = value;
             if (dir === "down") moveState.backward = value;
         }
-        
-        function toggleAI() {
-            useAI = !useAI;
-            updateAIStatus();
-        }
-        
-        function updateAIStatus() {
-            btnAI.textContent = useAI ? "ON" : "OFF";
-            btnAI.classList.toggle("active", useAI);
-            
-            // Update AI level display
-            const levelDesc = getLevelDescription(aiLevel);
-            aiLevelDisplay.textContent = `AI Level: ${aiLevel} (${levelDesc})`;
-            
-            if (useAI) {
-                statusMessage.textContent = `AI ACTIVE - Press [ ] to adjust level, I to disable`;
-                statusMessage.style.color = "#4caf50";
-            } else {
-                statusMessage.textContent = "Manual control - Press I to enable AI";
-                statusMessage.style.color = "#ffcc66";
-            }
-        }
-        
-        function getLevelDescription(level) {
-            if (level <= 3) return "Beginner";
-            if (level <= 6) return "Intermediate";
-            if (level <= 9) return "Advanced";
-            return "Expert";
-        }
 
         // ------------------------------------------------------------
-        // Game loop
+        // Main loop
         // ------------------------------------------------------------
         function animate(timestamp) {
             requestAnimationFrame(animate);
 
             const t = timestamp * 0.001;
-            const delta = lastTime ? t - lastTime : 0;
+            const delta = lastTime ? (t - lastTime) : 0;
             lastTime = t;
 
-            // Always update player (handles falling even when game over)
-            updatePlayer(delta);
-            
+            if (!player) {
+                renderer.render(scene, camera);
+                return;
+            }
+
             if (!isGameOver) {
+                updateDifficulty(t);
+                updatePlayer(delta);
+                updateCameraFollow(delta);
+
+                updateMeteors(delta);
+                updateEnemies(delta);
                 checkCollisions();
 
                 score += delta;
                 scoreDisplay.textContent = "Score: " + score.toFixed(1);
+            } else {
+                updateCameraFollow(delta);
+                updateMeteors(delta);
+                updateEnemies(delta);
             }
-            
-            // Always update meteors (even when game over)
-            updateMeteors(delta);
 
+            updateInfiniteFloor();
             renderer.render(scene, camera);
         }
 
+        // ------------------------------------------------------------
+        // Difficulty scaling
+        // ------------------------------------------------------------
+        function updateDifficulty(liveTime) {
+            const meteorTarget = Math.min(
+                maxMeteorCount,
+                baseMeteorCount + Math.floor(liveTime / 10) * 6
+            );
+            ensureMeteors(meteorTarget);
+
+            let enemyTarget = 0;
+            if (liveTime >= enemyStartTime) {
+                enemyTarget = Math.min(
+                    maxEnemyCount,
+                    1 + Math.floor((liveTime - enemyStartTime) / 12)
+                );
+            }
+            ensureEnemies(enemyTarget);
+        }
+
+        // ------------------------------------------------------------
+        // Player update (camera-aligned movement)
+        // ------------------------------------------------------------
         function updatePlayer(delta) {
-            if (!player) return;
+            if (!player || delta <= 0) return;
 
-            // Check if entire player body is in hole - game over immediately (no movement allowed)
-            const playerRadius = 0.9;
-            if (!isGameOver && isFullyInHole(player.position.x, player.position.z, playerRadius)) {
-                isGameOver = true;
-                isFalling = true;
-            }
+            let ix = 0, iz = 0;
 
-            // Disable movement when game over
-            if (isGameOver) {
-                // Continue falling if already falling
-                if (isFalling) {
-                    player.position.y -= fallSpeed * delta;
-                    if (player.position.y < -2 && !statusMessage.textContent.includes("Game over")) {
-                        const base = "Game over! Final score " + score.toFixed(1) + ".";
-                        statusMessage.textContent = base + " You fell into a hole! Press R or switch mode to restart.";
-                    }
-                }
-                return;
-            }
+            if (moveState.left)  ix -= 1;
+            if (moveState.right) ix += 1;
+            if (moveState.forward)  iz += 1;  // screen up
+            if (moveState.backward) iz -= 1;  // screen down
 
-            // Input in "screen" space: ix = left/right, iz = up/down (forward/back)
-            let ix = 0;
-            let iz = 0;
-            
-            // Use AI if enabled, otherwise use manual controls
-            if (useAI) {
-                // Calculate current meteor fall speed
-                const speedBoost = score * 0.15;
-                const meteorFallSpeed = baseMeteorSpeed + speedBoost;
-                
-                // Prepare meteor data with velocity for AI
-                const meteorData = meteors.map(m => ({
-                    position: { 
-                        x: m.position.x, 
-                        y: m.position.y, 
-                        z: m.position.z 
-                    },
-                    velocity: {
-                        x: 0,
-                        y: -meteorFallSpeed, // Meteors fall straight down
-                        z: 0
-                    }
-                }));
-                
-                // Get AI's suggested move with difficulty level (returns world-space dx/dz)
-                const move = computerAI.suggestMove(meteorData, {
-                    x: player.position.x,
-                    y: player.position.y,
-                    z: player.position.z
-                }, score, aiLevel);
-                
-                // Convert AI's world-space movement (dx, dz) to camera-aligned (ix, iz)
-                // AI returns movement in world coordinates: dx = world X, dz = world Z
-                // We need to project this onto camera basis vectors
-                const worldDx = move.dx || 0;
-                const worldDz = move.dz || 0;
-                
-                // Project world movement onto camera right and forward vectors
-                // ix = component along camRight, iz = component along camForward
-                ix = worldDx * camRight.x + worldDz * camRight.z;
-                iz = worldDx * camForward.x + worldDz * camForward.z;
-            } else {
-                // Manual controls
-                if (moveState.left)  ix -= 1;
-                if (moveState.right) ix += 1;
-                if (moveState.forward)  iz += 1;   // W / ArrowUp -> move "up" on screen
-                if (moveState.backward) iz -= 1;   // S / ArrowDown -> move "down" on screen
-            }
+            if (ix === 0 && iz === 0) return;
 
-            if (ix === 0 && iz === 0) {
-                return;
-            }
+            const len = Math.sqrt(ix*ix + iz*iz);
+            ix /= len; iz /= len;
 
-            // normalize
-            const len = Math.sqrt(ix * ix + iz * iz);
-            ix /= len;
-            iz /= len;
-
-            // world movement based on camera basis:
-            // right/left along camRight, up/down along camForward
-            const worldMove = new THREE.Vector3();
-            worldMove.copy(camRight).multiplyScalar(ix);
-            worldMove.addScaledVector(camForward, iz);
+            tmpV1.copy(camRight).multiplyScalar(ix);
+            tmpV1.addScaledVector(camForward, iz);
 
             const dist = playerSpeed * delta;
-            const newX = player.position.x + worldMove.x * dist;
-            const newZ = player.position.z + worldMove.z * dist;
+            player.position.x += tmpV1.x * dist;
+            player.position.z += tmpV1.z * dist;
 
-            const half = worldSize * 0.5 - 1.0;
-            player.position.x = THREE.MathUtils.clamp(newX, -half, half);
-            player.position.z = THREE.MathUtils.clamp(newZ, -half, half);
-
+            // Small tilt
             const maxTilt = 0.35;
             const targetTiltZ = THREE.MathUtils.clamp(-ix * maxTilt, -maxTilt, maxTilt);
             const targetTiltX = THREE.MathUtils.clamp(-iz * maxTilt, -maxTilt, maxTilt);
@@ -830,7 +741,12 @@
             player.rotation.x = THREE.MathUtils.lerp(player.rotation.x, targetTiltX, 0.15);
         }
 
+        // ------------------------------------------------------------
+        // Meteors
+        // ------------------------------------------------------------
         function updateMeteors(delta) {
+            if (delta <= 0) return;
+
             const speedBoost = score * 0.15;
             const fallSpeed = baseMeteorSpeed + speedBoost;
 
@@ -843,93 +759,89 @@
                 m.rotation.y += 0.5 * delta;
 
                 if (m.position.y < -4) {
-                    resetMeteorPosition(m, false);
+                    resetMeteorNearPlayer(m, false);
                 }
 
-                // NEW: update shadow position/scale/opacity
                 if (s) {
                     s.position.x = m.position.x;
                     s.position.z = m.position.z;
 
-                    // t = 0 (low) -> big dark shadow; t = 1 (high) -> small faint shadow
-                    const t = THREE.MathUtils.clamp((m.position.y - 2) / 18, 0, 1);
-                    const scale = THREE.MathUtils.lerp(1.5, 0.4, t);
+                    const t = THREE.MathUtils.clamp((m.position.y - 2) / 22, 0, 1);
+                    const scale = THREE.MathUtils.lerp(1.6, 0.45, t);
                     s.scale.set(scale, scale, 1);
-
-                    const mat = s.material;
-                    mat.opacity = THREE.MathUtils.lerp(0.55, 0.15, t);
+                    s.material.opacity = THREE.MathUtils.lerp(0.58, 0.12, t);
                 }
             }
         }
 
-        function resetMeteorPosition(meteor, randomHeight) {
-            const half = worldSize * 0.5 - 1.5;
-            meteor.position.x = THREE.MathUtils.randFloat(-half, half);
-            meteor.position.z = THREE.MathUtils.randFloat(-half, half);
-            meteor.position.y = randomHeight
-                ? THREE.MathUtils.randFloat(6, 24)
-                : THREE.MathUtils.randFloat(14, 26);
+        // ------------------------------------------------------------
+        // Enemies update
+        // ------------------------------------------------------------
+        function updateEnemies(delta) {
+            if (delta <= 0 || activeEnemyCount <= 0) return;
+
+            const enemySpeed = 2.6 + Math.min(4.0, score * 0.03);
+
+            for (let i = 0; i < activeEnemyCount; i++) {
+                const e = enemies[i];
+                if (!e) continue;
+
+                const dx = player.position.x - e.position.x;
+                const dz = player.position.z - e.position.z;
+                const d = Math.sqrt(dx*dx + dz*dz);
+
+                if (d > 0.001) {
+                    e.position.x += (dx / d) * enemySpeed * delta;
+                    e.position.z += (dz / d) * enemySpeed * delta;
+                }
+
+                if (d > 60) {
+                    spawnEnemyNearPlayer(e);
+                }
+            }
         }
 
+        // ------------------------------------------------------------
+        // Collisions
+        // ------------------------------------------------------------
         function checkCollisions() {
-            if (!player) return;
-
-            const playerPos = new THREE.Vector3();
-            player.getWorldPosition(playerPos);
-
             const playerRadius = 0.9;
             const meteorRadius = 0.8;
+            const enemyRadius  = 0.9;
 
+            // Meteor hit
             for (const m of meteors) {
-                const meteorPos = new THREE.Vector3();
-                m.getWorldPosition(meteorPos);
+                const dx = m.position.x - player.position.x;
+                const dy = m.position.y - player.position.y;
+                const dz = m.position.z - player.position.z;
+                const r = playerRadius + meteorRadius;
 
-                const dist = playerPos.distanceTo(meteorPos);
-                if (dist < playerRadius + meteorRadius) {
+                if (dx*dx + dy*dy + dz*dz < r*r) {
                     gameOver("Hit by a meteor!");
-                    break;
+                    return;
                 }
             }
-        }
 
-        function isInHole(x, z) {
-            for (const h of holes) {
-                if (Math.abs(x - h.x) < h.halfSize &&
-                    Math.abs(z - h.z) < h.halfSize) {
-                    return true;
-                }
-            }
-            return false;
-        }
+            // Enemy hit
+            for (let i = 0; i < activeEnemyCount; i++) {
+                const e = enemies[i];
+                const dx = e.position.x - player.position.x;
+                const dz = e.position.z - player.position.z;
+                const r = playerRadius + enemyRadius;
 
-        function isFullyInHole(x, z, playerRadius) {
-            for (const h of holes) {
-                // Check if entire player body (center ± radius) is within hole bounds
-                const leftEdge = x - playerRadius;
-                const rightEdge = x + playerRadius;
-                const frontEdge = z - playerRadius;
-                const backEdge = z + playerRadius;
-                
-                const holeLeft = h.x - h.halfSize;
-                const holeRight = h.x + h.halfSize;
-                const holeFront = h.z - h.halfSize;
-                const holeBack = h.z + h.halfSize;
-                
-                if (leftEdge >= holeLeft && rightEdge <= holeRight &&
-                    frontEdge >= holeFront && backEdge <= holeBack) {
-                    return true;
+                if (dx*dx + dz*dz < r*r) {
+                    gameOver("Caught by an enemy!");
+                    return;
                 }
             }
-            return false;
         }
 
         function gameOver(reason) {
             if (isGameOver) return;
             isGameOver = true;
-            const base = "Game over! Final score " + score.toFixed(1) + ".";
-            const reasonText = reason ? " " + reason : "";
             statusMessage.textContent =
-                base + reasonText + " Press R or switch mode to restart.";
+                "Game over! Final score " + score.toFixed(1) + ". " +
+                (reason || "") + " Press R or switch mode to restart.";
         }
 
         // ------------------------------------------------------------
@@ -944,3 +856,5 @@
     </script>
 </body>
 </html>
+
+
