@@ -12,6 +12,8 @@ class ComputerAI {
         this.waitEndTime = 0; // When the wait period finishes
         this.enableHoleAvoidance = true;
         this.enableThinkingTime = true;
+        this.enableEnemyAvoidance = true;
+        this.minEnemyDistance = 5.0; // Minimum safe distance from enemies (units)
     }
 
     /**
@@ -20,9 +22,11 @@ class ComputerAI {
      * @param {Object} position - Current player position {x, y, z}
      * @param {Number} currentScore - Current game score
      * @param {Number} aiLevel - AI difficulty level (1-10)
+     * @param {Array} enemies - Array of enemy objects with position (optional)
+     * @param {Array} holes - Array of hole objects with {x, z, halfSize} (optional)
      * @returns {Object} - Movement direction {dx, dz}
      */
-    suggestMove(meteors, position, currentScore = 0, aiLevel = 5) {
+    suggestMove(meteors, position, currentScore = 0, aiLevel = 5, enemies = [], holes = []) {
         const currentTime = Date.now() / 1000;
         
         if (this.shouldPlanNewPath(currentTime)) {
@@ -30,7 +34,7 @@ class ComputerAI {
                 return { dx: 0, dz: 0 };
             }
             
-            this.planAndStartNewPath(meteors, position, currentScore, aiLevel, currentTime);
+            this.planAndStartNewPath(meteors, position, currentScore, aiLevel, currentTime, enemies, holes);
         }
         
         return this.getCurrentPathDirection();
@@ -53,8 +57,8 @@ class ComputerAI {
     /**
      * Action: Plan a new path and start following it
      */
-    planAndStartNewPath(meteors, position, currentScore, aiLevel, currentTime) {
-        this.currentPath = this.planNewPath(meteors, position, currentScore, aiLevel);
+    planAndStartNewPath(meteors, position, currentScore, aiLevel, currentTime, enemies = [], holes = []) {
+        this.currentPath = this.planNewPath(meteors, position, currentScore, aiLevel, enemies, holes);
         this.pathStartTime = currentTime;
         this.pathEndTime = currentTime + this.currentPath.duration;
         
@@ -88,18 +92,19 @@ class ComputerAI {
     /**
      * Plan a new path based on AI level
      */
-    planNewPath(meteors, position, currentScore, aiLevel) {
+    planNewPath(meteors, position, currentScore, aiLevel, enemies = [], holes = []) {
         const skill = this.calculateSkillFromLevel(aiLevel);
         const pathDuration = this.calculatePathDuration(skill);
         const lookaheadPercent = this.calculateLookaheadPercent(skill);
         const meteorFallSpeed = this.calculateMeteorSpeed(currentScore);
         const predictionTime = pathDuration * lookaheadPercent;
         const predictedMeteors = this.predictMeteorPositions(meteors, meteorFallSpeed, predictionTime);
+        const predictedEnemies = this.predictEnemyPositions(enemies, position, pathDuration);
         
         this.logPlanningDebug(aiLevel, position, pathDuration, lookaheadPercent, predictionTime, meteors, predictedMeteors);
         
         const directions = this.getAllPossibleDirections();
-        const bestPath = this.selectBestPath(directions, position, predictedMeteors, pathDuration, lookaheadPercent, aiLevel);
+        const bestPath = this.selectBestPath(directions, position, predictedMeteors, pathDuration, lookaheadPercent, aiLevel, predictedEnemies, holes);
         
         return bestPath || { dx: 0, dz: 0, duration: pathDuration, score: 0 };
     }
@@ -117,7 +122,7 @@ class ComputerAI {
      */
     calculatePathDuration(skill) {
         // Reduced from 1.5s because at 12 units/sec, long paths go out of bounds
-        return 0.8 - skill * 0.5;
+        return 1.6 - skill * 1.0;
     }
 
     /**
@@ -159,13 +164,13 @@ class ComputerAI {
     /**
      * Decision: Select the best path from all possible directions
      */
-    selectBestPath(directions, position, predictedMeteors, pathDuration, lookaheadPercent, aiLevel) {
+    selectBestPath(directions, position, predictedMeteors, pathDuration, lookaheadPercent, aiLevel, predictedEnemies = [], holes = []) {
         let bestPath = null;
         let bestScore = -Infinity;
         const allScores = [];
         
         for (const dir of directions) {
-            const score = this.evaluatePath(dir, position, predictedMeteors, pathDuration, lookaheadPercent, aiLevel);
+            const score = this.evaluatePath(dir, position, predictedMeteors, pathDuration, lookaheadPercent, aiLevel, predictedEnemies, holes);
             allScores.push({ name: dir.name, score: score });
             
             if (score > bestScore) {
@@ -227,17 +232,67 @@ class ComputerAI {
     }
 
     /**
+     * Predict where enemies will be (they chase the player)
+     * Enemies move toward the player, so we predict based on their current position and direction to player
+     */
+    predictEnemyPositions(enemies, playerPosition, pathDuration) {
+        if (!this.enableEnemyAvoidance || !enemies || enemies.length === 0) {
+            return [];
+        }
+
+        // Estimate enemy speed (similar to how the game calculates it)
+        // This is a rough estimate - in the actual game, enemy speed varies with score
+        const estimatedEnemySpeed = 2.6; // Base speed, will be adjusted based on game state
+        
+        return enemies.map(e => {
+            if (!e || !e.position) return null;
+            
+            const dx = playerPosition.x - e.position.x;
+            const dz = playerPosition.z - e.position.z;
+            const dist = Math.sqrt(dx * dx + dz * dz);
+            
+            // If enemy is very close or at same position, don't predict movement
+            if (dist < 0.001) {
+                return {
+                    currentX: e.position.x,
+                    currentY: e.position.y || 0.6,
+                    currentZ: e.position.z,
+                    velocity: { x: 0, y: 0, z: 0 },
+                    predictionTime: pathDuration
+                };
+            }
+            
+            // Normalize direction and apply speed
+            const normalizedDx = dx / dist;
+            const normalizedDz = dz / dist;
+            
+            return {
+                currentX: e.position.x,
+                currentY: e.position.y || 0.6,
+                currentZ: e.position.z,
+                velocity: { 
+                    x: normalizedDx * estimatedEnemySpeed, 
+                    y: 0, 
+                    z: normalizedDz * estimatedEnemySpeed 
+                },
+                predictionTime: pathDuration
+            };
+        }).filter(e => e !== null);
+    }
+
+    /**
      * Decision: Does the path cross or end inside any platform hole?
      * Returns true if the simulated movement along the direction would cross or end inside any platform hole.
      * This checks the AI's movement path to avoid falling through holes.
      */
-    pathContainsHole(direction, startPos, predictedMeteors, pathDuration, lookaheadPercent) {
+    pathContainsHole(direction, startPos, predictedMeteors, pathDuration, lookaheadPercent, holes = []) {
         // If hole avoidance is disabled, we never treat paths through holes as bad.
         if (!this.enableHoleAvoidance) {
             return false;
         }
         
-        const holeSpecs = this.getHoleSpecifications();
+        // Use dynamic holes if provided, otherwise fall back to empty array
+        const holeSpecs = holes.length > 0 ? holes : [];
         const playerSpeed = 12;
         const numSamples = 10;
 
@@ -251,17 +306,6 @@ class ComputerAI {
             }
         }
         return false;
-    }
-
-    /**
-     * Decision: Get the specifications of all platform holes
-     */
-    getHoleSpecifications() {
-        return [
-            { x: -6, z: 6, halfSize: 2.5 },
-            { x: 8,  z: -2, halfSize: 2.2 },
-            { x: 0,  z: -8, halfSize: 3.0 }
-        ];
     }
 
     /**
@@ -301,7 +345,7 @@ class ComputerAI {
     /**
      * Evaluate a path by simulating movement along it
      */
-    evaluatePath(direction, startPos, predictedMeteors, pathDuration, lookaheadPercent, aiLevel) {
+    evaluatePath(direction, startPos, predictedMeteors, pathDuration, lookaheadPercent, aiLevel, predictedEnemies = [], holes = []) {
         const playerSpeed = 12;
         const worldHalf = 9;
         
@@ -320,10 +364,11 @@ class ComputerAI {
         // Score different aspects of the path
         score += this.scoreMovementBonus(direction);
         score += this.scoreMeteorCollisions(direction, startPos, predictedMeteors, pathDuration, playerSpeed);
+        score += this.scoreEnemyCollisions(direction, startPos, predictedEnemies, pathDuration, playerSpeed);
         score += this.scoreCenterPreference(endX, endZ);
         score += this.scoreEdgeAvoidance(endX, endZ, worldHalf);
         score += this.scoreStillnessPenalty(direction, startPos, predictedMeteors);
-        score += this.scoreHolePenalty(direction, startPos, predictedMeteors, pathDuration, lookaheadPercent, aiLevel);
+        score += this.scoreHolePenalty(direction, startPos, predictedMeteors, pathDuration, lookaheadPercent, aiLevel, holes);
         score -= boundsPenalty;
         
         return score;
@@ -482,11 +527,136 @@ class ComputerAI {
     /**
      * Decision: Score penalty for paths that go through holes
      */
-    scoreHolePenalty(direction, startPos, predictedMeteors, pathDuration, lookaheadPercent, aiLevel) {
-        if (this.pathContainsHole(direction, startPos, predictedMeteors, pathDuration, lookaheadPercent)) {
+    scoreHolePenalty(direction, startPos, predictedMeteors, pathDuration, lookaheadPercent, aiLevel, holes = []) {
+        if (this.pathContainsHole(direction, startPos, predictedMeteors, pathDuration, lookaheadPercent, holes)) {
             return -20 * aiLevel;
         }
         return 0;
+    }
+
+    /**
+     * Decision: Score enemy collision risks along the path
+     */
+    scoreEnemyCollisions(direction, startPos, predictedEnemies, pathDuration, playerSpeed) {
+        if (!this.enableEnemyAvoidance || !predictedEnemies || predictedEnemies.length === 0) {
+            return 0;
+        }
+
+        let score = 0;
+        const numSamples = 8; // Check 8 points along the path
+        
+        // Simulate movement along the path
+        for (let i = 0; i <= numSamples; i++) {
+            const t = (i / numSamples) * pathDuration;
+            const playerX = startPos.x + direction.dx * playerSpeed * t;
+            const playerZ = startPos.z + direction.dz * playerSpeed * t;
+            
+            const collisionScore = this.scoreEnemyCollisionAtPoint(playerX, playerZ, t, predictedEnemies, startPos);
+            score += collisionScore;
+        }
+        
+        return score;
+    }
+
+    /**
+     * Decision: Score enemy collision risk at a specific point in time
+     */
+    scoreEnemyCollisionAtPoint(playerX, playerZ, time, predictedEnemies, playerStartPos) {
+        if (!this.enableEnemyAvoidance || !predictedEnemies || predictedEnemies.length === 0) {
+            return 0;
+        }
+
+        let score = 0;
+        let minDist = Infinity;
+        let closestEnemyAtTime = null;
+        
+        // Find the closest enemy at this point in time
+        for (const enemy of predictedEnemies) {
+            // Where is this enemy at time t?
+            const effectiveT = Math.min(time, enemy.predictionTime);
+            const enemyX = enemy.currentX + enemy.velocity.x * effectiveT;
+            const enemyY = enemy.currentY + enemy.velocity.y * effectiveT;
+            const enemyZ = enemy.currentZ + enemy.velocity.z * effectiveT;
+            
+            // Enemies are on the ground, so we check horizontal distance
+            const dist = Math.sqrt(
+                Math.pow(playerX - enemyX, 2) +
+                Math.pow(playerZ - enemyZ, 2)
+            );
+            
+            if (dist < minDist) {
+                minDist = dist;
+                closestEnemyAtTime = { x: enemyX, z: enemyZ, dist: dist };
+            }
+            
+            // Collision zone - enemies are dangerous when very close
+            if (dist < 2.0) {
+                score -= 1500; // Very strong penalty for being too close to enemies
+            }
+            // Danger zone
+            else if (dist < 4.0) {
+                score -= 400 / Math.max(dist, 0.5); // Strong penalty
+            }
+            // Warning zone
+            else if (dist < 6.0) {
+                score -= 50 / dist; // Moderate penalty
+            }
+            // Caution zone
+            else if (dist < 8.0) {
+                score -= 10 / dist; // Light penalty
+            }
+        }
+        
+        // Active minimum distance maintenance
+        if (minDist < Infinity && closestEnemyAtTime && playerStartPos) {
+            // Find the closest enemy at the start position to compare distance change
+            let closestEnemyAtStart = null;
+            let startDist = Infinity;
+            
+            for (const enemy of predictedEnemies) {
+                const startDistToEnemy = Math.sqrt(
+                    Math.pow(playerStartPos.x - enemy.currentX, 2) +
+                    Math.pow(playerStartPos.z - enemy.currentZ, 2)
+                );
+                if (startDistToEnemy < startDist) {
+                    startDist = startDistToEnemy;
+                    closestEnemyAtStart = { x: enemy.currentX, z: enemy.currentZ };
+                }
+            }
+            
+            if (minDist < this.minEnemyDistance) {
+                // Below minimum distance - strongly penalize
+                const distanceBelow = this.minEnemyDistance - minDist;
+                score -= 300 * distanceBelow; // Strong penalty for being below minimum
+                
+                // Check if this path moves away from the closest enemy
+                if (closestEnemyAtStart && startDist < Infinity) {
+                    if (minDist > startDist) {
+                        // Moving away - bonus
+                        score += 150 * (minDist - startDist);
+                    } else if (minDist < startDist) {
+                        // Moving closer - extra penalty
+                        score -= 200 * (startDist - minDist);
+                    }
+                }
+            } else {
+                // Above minimum distance - reward maintaining safe distance
+                const distanceAbove = minDist - this.minEnemyDistance;
+                score += 40 * Math.min(distanceAbove, 5); // Bonus for maintaining safe distance (capped)
+                
+                // Extra bonus if we're well above minimum
+                if (distanceAbove > 2.0) {
+                    score += 30; // Additional bonus for being well above minimum
+                }
+                
+                // Bonus for increasing distance when already safe
+                if (closestEnemyAtStart && startDist < Infinity && minDist > startDist) {
+                    score += 20 * Math.min(minDist - startDist, 3); // Small bonus for increasing distance
+                }
+            }
+        }
+        
+        return score;
     }
 
     /**
@@ -512,13 +682,20 @@ class ComputerAI {
     setThinkingTimeEnabled(enabled) {
         this.enableThinkingTime = !!enabled;
     }
+
+    /**
+     * Enable or disable enemy avoidance behavior.
+     */
+    setEnemyAvoidanceEnabled(enabled) {
+        this.enableEnemyAvoidance = !!enabled;
+    }
 }
 
 // For backward compatibility, export functions that use a singleton instance
 const defaultAI = new ComputerAI();
 
-function suggestMove(meteors, position, currentScore = 0, aiLevel = 5) {
-    return defaultAI.suggestMove(meteors, position, currentScore, aiLevel);
+function suggestMove(meteors, position, currentScore = 0, aiLevel = 5, enemies = [], holes = []) {
+    return defaultAI.suggestMove(meteors, position, currentScore, aiLevel, enemies, holes);
 }
 
 function resetAI() {

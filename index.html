@@ -146,8 +146,8 @@
 
         <div id="modeToggle">
             <span style="font-size:12px;">Mode:</span>
-            <button id="btnPrototype" class="active">Prototype</button>
-            <button id="btnFull">Full</button>
+            <button id="btnPrototype">Prototype</button>
+            <button id="btnFull" class="active">Full</button>
         </div>
 
         <div id="modeToggle">
@@ -162,6 +162,10 @@
             <label style="display:block; margin-top:2px;">
                 <input type="checkbox" id="chkThinkingTime" checked>
                 Thinking time
+            </label>
+            <label style="display:block; margin-top:2px;">
+                <input type="checkbox" id="chkEnemyAvoid" checked>
+                Enemy avoidance
             </label>
         </div>
 
@@ -209,13 +213,30 @@
         let scene, camera, renderer;
 
         let player = null;
+        let rocketExhaust = null; // Particle system for rocket exhaust
 
         // Meteors + shadows
         let meteors = [];
         let meteorShadows = [];
         let asteroidTemplate = null; // loaded OBJ for full-mode meteors
-
+        
         // Enemies
+        let alienTemplate = null; // loaded OBJ for enemies
+        let alienTemplateLoading = false; // track if alien model is currently loading
+        let maxRequestedEnemyCount = 0; // track maximum enemy count requested while loading
+        
+        // Meteor collision animation state
+        let meteorAnimations = []; // Array to track which meteors are animating
+        const meteorAnimationDuration = 0.5; // seconds for collision animation
+        
+        // Pre-baked explosion debris system
+        let debrisPool = []; // Pool of pre-created debris pieces
+        let activeDebris = []; // Currently active debris pieces with animation data
+        const debrisCount = 20; // Number of debris pieces per explosion
+        const debrisPoolSize = 200; // Total pool size (supports ~10 simultaneous explosions)
+        const debrisLifetime = 2.0; // How long debris stays visible (seconds)
+
+        // Enemies (aliens)
         let enemies = [];
         let activeEnemyCount = 0;
 
@@ -223,6 +244,7 @@
         let floorGroup = null;
         let floorTiles = [];
         let gridHelper = null;
+        let skySphere = null;
 
         // Holes are dynamic (for visible tiles only)
         // Each entry: { x, z, halfSize }
@@ -236,9 +258,14 @@
             backward: false
         };
 
-        let isPrototypeMode = true;
+        let isPrototypeMode = false;
         let isGameOver = false;
         let isFalling = false;
+        
+        // Black hole animation state
+        let blackHoleAnimationStartTime = 0;
+        let initialPlayerScale = new THREE.Vector3(1, 1, 1);
+        let blackHoleTargetPos = new THREE.Vector3(); // Center of the black hole
 
         let score = 0;
         let lastTime = 0;
@@ -266,7 +293,8 @@
         const textures = {
             rocketBase: null,
             asteroidColor: null,
-            asteroidNormal: null
+            asteroidNormal: null,
+            galaxy: null
         };
 
         // UI
@@ -278,6 +306,7 @@
         const btnAI = document.getElementById("btnAI");
         const chkHoleAvoid = document.getElementById("chkHoleAvoid");
         const chkThinkingTime = document.getElementById("chkThinkingTime");
+        const chkEnemyAvoid = document.getElementById("chkEnemyAvoid");
         const canvasContainer = document.getElementById("canvasContainer");
 
         // Camera-aligned movement basis
@@ -297,12 +326,13 @@
         // Movement
         const playerSpeed = 12;
 
-        // Falling animation
-        const fallSpeed = 15;
+        // Black hole animation
+        const blackHoleAnimationDuration = 2.0; // seconds to complete animation
+        const blackHoleSpinSpeed = 3.0; // rotations per second
 
         // Meteors scaling
         const baseMeteorCount = 24;
-        const maxMeteorCount  = 90;
+        const maxMeteorCount  = 90 * 4;
         const baseMeteorSpeed = 8;
 
         // Enemies scaling
@@ -310,8 +340,8 @@
         const maxEnemyCount = 18;
 
         // Spawn radii relative to player
-        const meteorSpawnRadiusMin = 6;
-        const meteorSpawnRadiusMax = 18;
+        const meteorSpawnRadiusMin = 6; 
+        const meteorSpawnRadiusMax = 18 * 4;
         const enemySpawnRadiusMin = 12;
         const enemySpawnRadiusMax = 22;
 
@@ -330,7 +360,7 @@
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setPixelRatio(window.devicePixelRatio);
             renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.setClearColor(0x050818);
+            renderer.setClearColor(0x4a148c); // Purple background
             canvasContainer.appendChild(renderer.domElement);
 
             scene = new THREE.Scene();
@@ -379,8 +409,9 @@
             }
 
             createSky();
-            createInfiniteFloor();
-            setMode(true);
+            createInfiniteFloor(); // Creates black holes (no floor)
+            createDebrisPool(); // Pre-bake debris pieces
+            setMode(false);
             setupInput();
 
             window.addEventListener("resize", onWindowResize);
@@ -415,6 +446,8 @@
                     console.warn("Failed to load Asteroid2b_NormalGL_1K.png");
                 }
             );
+
+            // Galaxy texture removed - using simple purple background instead
         }
 
         function computeCameraBasis() {
@@ -423,108 +456,169 @@
             camRight.crossVectors(camForward, worldUp).normalize();
         }
 
+        function createGalaxyTexture() {
+            // Create a canvas for the galaxy texture
+            const canvas = document.createElement('canvas');
+            canvas.width = 2048;
+            canvas.height = 1024;
+            const ctx = canvas.getContext('2d');
+            
+            // Base dark purple
+            ctx.fillStyle = '#1a0a2e';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Create galaxy center (bright core)
+            const centerX = canvas.width * 0.5;
+            const centerY = canvas.height * 0.5;
+            
+            // Radial gradient for galaxy core
+            const gradient = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, canvas.width * 0.4);
+            gradient.addColorStop(0, '#8e24aa'); // Bright purple center
+            gradient.addColorStop(0.3, '#6a1b9a'); // Medium purple
+            gradient.addColorStop(0.6, '#4a148c'); // Dark purple
+            gradient.addColorStop(1, '#1a0a2e'); // Very dark purple edge
+            
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Add some spiral arms (simple diagonal gradients)
+            for (let i = 0; i < 4; i++) {
+                const angle = (i / 4) * Math.PI * 2;
+                const armGradient = ctx.createLinearGradient(
+                    centerX, centerY,
+                    centerX + Math.cos(angle) * canvas.width * 0.6,
+                    centerY + Math.sin(angle) * canvas.height * 0.6
+                );
+                armGradient.addColorStop(0, 'rgba(142, 36, 170, 0.3)');
+                armGradient.addColorStop(0.5, 'rgba(106, 27, 154, 0.2)');
+                armGradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+                
+                ctx.fillStyle = armGradient;
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+            }
+            
+            // Add stars (random white dots)
+            ctx.fillStyle = '#ffffff';
+            for (let i = 0; i < 2000; i++) {
+                const x = Math.random() * canvas.width;
+                const y = Math.random() * canvas.height;
+                const size = Math.random() * 2;
+                const brightness = Math.random();
+                
+                ctx.globalAlpha = brightness * 0.8;
+                ctx.beginPath();
+                ctx.arc(x, y, size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.globalAlpha = 1.0;
+            
+            // Make texture seamless by copying edge pixels
+            // Get image data to manipulate pixels
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const pixels = imageData.data;
+            
+            // Copy rightmost column to leftmost column to ensure seamless wrap
+            for (let y = 0; y < canvas.height; y++) {
+                const leftIdx = (y * canvas.width + 0) * 4;
+                const rightIdx = (y * canvas.width + (canvas.width - 1)) * 4;
+                
+                // Copy RGB from right edge to left edge
+                pixels[leftIdx] = pixels[rightIdx];
+                pixels[leftIdx + 1] = pixels[rightIdx + 1];
+                pixels[leftIdx + 2] = pixels[rightIdx + 2];
+                pixels[leftIdx + 3] = pixels[rightIdx + 3];
+            }
+            
+            ctx.putImageData(imageData, 0, 0);
+            
+            // Create texture from canvas
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.mapping = THREE.EquirectangularReflectionMapping;
+            texture.wrapS = THREE.RepeatWrapping;
+            texture.wrapT = THREE.ClampToEdgeWrapping;
+            return texture;
+        }
+
         function createSky() {
-            const skyGeo = new THREE.SphereGeometry(120, 32, 32);
+            // Increase segments for smoother sphere (reduces visible seams)
+            const skyGeo = new THREE.SphereGeometry(120, 64, 64);
+            const galaxyTexture = createGalaxyTexture();
             const skyMat = new THREE.MeshBasicMaterial({
-                color: 0x050818,
+                map: galaxyTexture,
                 side: THREE.BackSide
             });
-            const skySphere = new THREE.Mesh(skyGeo, skyMat);
+            
+            skySphere = new THREE.Mesh(skyGeo, skyMat);
             scene.add(skySphere);
         }
 
         // ------------------------------------------------------------
-        // Infinite floor (3x3 reusable tiles)
+        // Black holes (no floor - holes float in space)
         // ------------------------------------------------------------
         function createInfiniteFloor() {
-            floorGroup = new THREE.Group();
+            // No floor tiles or grid - just initialize hole meshes
+            floorGroup = null;
             floorTiles = [];
             holeMeshes = [];
 
-            const floorGeo = new THREE.PlaneGeometry(tileSize, tileSize);
-            const floorMat = new THREE.MeshStandardMaterial({ color: 0x777777 });
-
-            for (let ox = -tileRadius; ox <= tileRadius; ox++) {
-                for (let oz = -tileRadius; oz <= tileRadius; oz++) {
-                    const tile = new THREE.Mesh(floorGeo, floorMat);
-                    tile.rotation.x = -Math.PI / 2;
-                    tile.userData.offsetX = ox;
-                    tile.userData.offsetZ = oz;
-                    tile.userData.tileX = 0;
-                    tile.userData.tileZ = 0;
-                    tile.userData.holeData = []; // generated per tile
-
-                    tile.position.set(ox * tileSize, 0, oz * tileSize);
-                    floorGroup.add(tile);
-                    floorTiles.push(tile);
-
-                    // Pre-allocate up to 2 visual hole pads per tile (cheap)
-                    for (let i = 0; i < 2; i++) {
-                        const hg = new THREE.PlaneGeometry(1, 1);
-                        const hm = new THREE.MeshStandardMaterial({
-                            color: 0x050505,
-                            metalness: 0.1,
-                            roughness: 0.9
-                        });
-                        const hmesh = new THREE.Mesh(hg, hm);
-                        hmesh.rotation.x = -Math.PI / 2;
-                        hmesh.position.y = 0.01;
-                        hmesh.visible = false;
-                        scene.add(hmesh);
-                        holeMeshes.push(hmesh);
-                    }
-                }
+            // Pre-allocate hole meshes for black holes (more than before since we're not limited by tiles)
+            // Create enough for visible holes in a larger area
+            const maxHoles = 20; // Enough for multiple tiles worth of holes
+            for (let i = 0; i < maxHoles; i++) {
+                // Create black hole as a dark circle with depth effect
+                const hg = new THREE.CircleGeometry(1, 32);
+                const hm = new THREE.MeshBasicMaterial({
+                    color: 0x000000, // Pure black
+                    transparent: true,
+                    opacity: 0.95
+                });
+                const hmesh = new THREE.Mesh(hg, hm);
+                hmesh.rotation.x = -Math.PI / 2;
+                hmesh.position.y = 0.01;
+                hmesh.visible = false;
+                scene.add(hmesh);
+                holeMeshes.push(hmesh);
             }
-
-            scene.add(floorGroup);
-
-            const gridSize = tileSize * (tileRadius * 2 + 1);
-            gridHelper = new THREE.GridHelper(gridSize, (tileRadius * 2 + 1) * 8, 0x444444, 0x333333);
-            gridHelper.position.y = 0.02;
-            scene.add(gridHelper);
         }
 
-        // Simple deterministic hash for procedural holes
-        function hash2i(x, z) {
-            let h = x * 374761393 + z * 668265263;
-            h = (h ^ (h >> 13)) * 1274126177;
-            h = h ^ (h >> 16);
-            return h >>> 0;
-        }
-        function rand01(seed) {
-            // xorshift-like
-            seed ^= seed << 13; seed >>>= 0;
-            seed ^= seed >> 17; seed >>>= 0;
-            seed ^= seed << 5;  seed >>>= 0;
-            return (seed % 10000) / 10000;
+        // Simple seeded random number generator for consistent randomness
+        function seededRandom(seed) {
+            // Simple LCG (Linear Congruential Generator)
+            seed = (seed * 9301 + 49297) % 233280;
+            return seed / 233280;
         }
 
         function generateHolesForTile(tileX, tileZ) {
-            // 0-2 holes per tile, deterministic
-            const baseSeed = hash2i(tileX, tileZ);
-
-            const r = rand01(baseSeed);
+            // Create a deterministic seed from tile coordinates
+            let seed = (tileX * 73856093) ^ (tileZ * 19349663);
+            seed = (seed >>> 0); // Ensure positive integer
+            
+            // 0-2 holes per tile, deterministic based on tile position
+            const r = seededRandom(seed);
             const holeCount = (r < 0.35) ? 0 : (r < 0.75 ? 1 : 2);
 
             const results = [];
             const margin = 5; // keep away from edges
             const usable = tileSize * 0.5 - margin;
 
-            let seed = baseSeed;
-
             for (let i = 0; i < holeCount; i++) {
-                seed = hash2i(seed, i + 11);
-
-                const rx = rand01(seed);
-                seed = hash2i(seed, i + 31);
-                const rz = rand01(seed);
+                // Generate new seed for each hole
+                seed = (seed * 73856093) ^ (i * 19349663);
+                seed = (seed >>> 0);
+                
+                const rx = seededRandom(seed);
+                seed = (seed * 73856093) ^ ((i + 1) * 19349663);
+                seed = (seed >>> 0);
+                
+                const rz = seededRandom(seed);
+                seed = (seed * 73856093) ^ ((i + 2) * 19349663);
+                seed = (seed >>> 0);
 
                 // local offsets within tile
                 const localX = THREE.MathUtils.lerp(-usable, usable, rx);
                 const localZ = THREE.MathUtils.lerp(-usable, usable, rz);
 
-                seed = hash2i(seed, i + 71);
-                const sizeR = rand01(seed);
+                const sizeR = seededRandom(seed);
                 const halfSize = THREE.MathUtils.lerp(1.6, 3.0, sizeR);
 
                 results.push({ localX, localZ, halfSize });
@@ -539,46 +633,39 @@
             const cx = Math.floor(player.position.x / tileSize);
             const cz = Math.floor(player.position.z / tileSize);
 
-            holes = []; // rebuild visible hole list each frame (small)
+            holes = []; // rebuild visible hole list each frame
 
-            // We'll reuse holeMeshes in order:
+            // Generate holes for visible tiles around player (3x3 grid)
             let holeMeshIndex = 0;
 
-            for (const tile of floorTiles) {
-                const ox = tile.userData.offsetX;
-                const oz = tile.userData.offsetZ;
+            for (let ox = -tileRadius; ox <= tileRadius; ox++) {
+                for (let oz = -tileRadius; oz <= tileRadius; oz++) {
+                    const tileX = cx + ox;
+                    const tileZ = cz + oz;
 
-                const tileX = cx + ox;
-                const tileZ = cz + oz;
+                    // Generate holes for this tile
+                    const tileHoles = generateHolesForTile(tileX, tileZ);
 
-                // Move tile
-                tile.position.x = tileX * tileSize;
-                tile.position.z = tileZ * tileSize;
+                    // Place visual holes + push collision holes
+                    for (let i = 0; i < tileHoles.length; i++) {
+                        const h = tileHoles[i];
 
-                // If tile identity changed, regenerate holes
-                if (tile.userData.tileX !== tileX || tile.userData.tileZ !== tileZ) {
-                    tile.userData.tileX = tileX;
-                    tile.userData.tileZ = tileZ;
-                    tile.userData.holeData = generateHolesForTile(tileX, tileZ);
-                }
+                        // Calculate world position
+                        const worldX = tileX * tileSize + h.localX;
+                        const worldZ = tileZ * tileSize + h.localZ;
 
-                // Place visual holes + push collision holes
-                const hd = tile.userData.holeData;
+                        holes.push({ x: worldX, z: worldZ, halfSize: h.halfSize });
 
-                for (let i = 0; i < hd.length; i++) {
-                    const h = hd[i];
-
-                    const worldX = tile.position.x + h.localX;
-                    const worldZ = tile.position.z + h.localZ;
-
-                    holes.push({ x: worldX, z: worldZ, halfSize: h.halfSize });
-
-                    const mesh = holeMeshes[holeMeshIndex++];
-                    if (mesh) {
-                        mesh.visible = true;
-                        mesh.position.x = worldX;
-                        mesh.position.z = worldZ;
-                        mesh.scale.set(h.halfSize * 2, h.halfSize * 2, 1);
+                        // Update visual black hole
+                        const mesh = holeMeshes[holeMeshIndex++];
+                        if (mesh) {
+                            mesh.visible = true;
+                            mesh.position.x = worldX;
+                            mesh.position.z = worldZ;
+                            mesh.position.y = 0.01;
+                            // Scale to match collision radius: CircleGeometry(1) scaled by halfSize gives radius = halfSize
+                            mesh.scale.set(h.halfSize, h.halfSize, 1);
+                        }
                     }
                 }
             }
@@ -586,11 +673,6 @@
             // Hide unused hole meshes
             for (let i = holeMeshIndex; i < holeMeshes.length; i++) {
                 holeMeshes[i].visible = false;
-            }
-
-            if (gridHelper) {
-                gridHelper.position.x = cx * tileSize;
-                gridHelper.position.z = cz * tileSize;
             }
         }
 
@@ -617,6 +699,16 @@
             camera.lookAt(cameraLookAtPos);
 
             computeCameraBasis();
+        }
+
+        function updateSkyFollow() {
+            if (!player || !skySphere) return;
+            
+            // Make the sky sphere follow the player's X and Z position
+            // Keep Y at 0 since it's a sphere centered around the player
+            skySphere.position.x = player.position.x;
+            skySphere.position.z = player.position.z;
+            skySphere.position.y = 0;
         }
 
         // ------------------------------------------------------------
@@ -663,6 +755,9 @@
             }
             playerVelocityX = 0;
             playerVelocityZ = 0;
+            
+            // Reset enemy count tracking
+            maxRequestedEnemyCount = 0;
 
             computerAI.reset();
         }
@@ -672,11 +767,23 @@
                 scene.remove(player);
                 player = null;
             }
+            
+            if (rocketExhaust) {
+                scene.remove(rocketExhaust);
+                rocketExhaust = null;
+            }
 
             meteors.forEach(m => scene.remove(m));
             meteorShadows.forEach(s => scene.remove(s));
             meteors = [];
             meteorShadows = [];
+            meteorAnimations = []; // Reset collision animations
+            
+            // Reset debris (hide all pieces)
+            debrisPool.forEach(piece => {
+                piece.visible = false;
+            });
+            activeDebris = [];
 
             enemies.forEach(e => scene.remove(e));
             enemies = [];
@@ -693,6 +800,12 @@
             player.position.set(0, 1, 0);
             player.rotation.y = -Math.PI / 4; // 45 degrees clockwise from top-down
             scene.add(player);
+            
+            // Create rocket exhaust particles
+            if (!rocketExhaust) {
+                rocketExhaust = createRocketExhaust();
+                scene.add(rocketExhaust);
+            }
             
             // Initialize player position tracking for velocity calculation
             lastPlayerX = player.position.x;
@@ -711,6 +824,13 @@
                 player.position.set(0, 1, 0);
                 player.rotation.y = -Math.PI / 4; // 45 degrees clockwise from top-down
                 scene.add(player);
+                
+                // Create rocket exhaust particles
+                if (!rocketExhaust) {
+                    rocketExhaust = createRocketExhaust();
+                    scene.add(rocketExhaust);
+                }
+                
                 lastPlayerX = player.position.x;
                 lastPlayerZ = player.position.z;
                 playerVelocityX = 0;
@@ -740,6 +860,13 @@
                                 player.position.set(0, 1, 0);
                                 player.rotation.y = -Math.PI / 4; // 45 degrees clockwise from top-down
                                 scene.add(player);
+                                
+                                // Create rocket exhaust particles
+                                if (!rocketExhaust) {
+                                    rocketExhaust = createRocketExhaust();
+                                    scene.add(rocketExhaust);
+                                }
+                                
                                 lastPlayerX = player.position.x;
                                 lastPlayerZ = player.position.z;
                                 playerVelocityX = 0;
@@ -777,6 +904,13 @@
                         player.scale.set(1.8, 1.8, 1.8);
                         player.position.set(0, 1, 0);
                         scene.add(player);
+                        
+                        // Create rocket exhaust particles
+                        if (!rocketExhaust) {
+                            rocketExhaust = createRocketExhaust();
+                            scene.add(rocketExhaust);
+                        }
+                        
                         lastPlayerX = player.position.x;
                         lastPlayerZ = player.position.z;
                         playerVelocityX = 0;
@@ -792,6 +926,12 @@
                 player = fallbackPlayer;
                 player.rotation.y = -Math.PI / 4; // 45 degrees clockwise from top-down
                 scene.add(player);
+                
+                // Create rocket exhaust particles
+                if (!rocketExhaust) {
+                    rocketExhaust = createRocketExhaust();
+                    scene.add(rocketExhaust);
+                }
             }
         }
 
@@ -831,6 +971,180 @@
             });
         }
 
+        // ------------------------------------------------------------
+        // Rocket Exhaust Particles
+        // ------------------------------------------------------------
+        function createRocketExhaust() {
+            const particleCount = 150;
+            const geometry = new THREE.BufferGeometry();
+            const positions = new Float32Array(particleCount * 3);
+            const colors = new Float32Array(particleCount * 3);
+            const lifetimes = new Float32Array(particleCount);
+            
+            // Initialize all particles as inactive
+            for (let i = 0; i < particleCount; i++) {
+                positions[i * 3] = 0;
+                positions[i * 3 + 1] = -1000; // Hide off-screen
+                positions[i * 3 + 2] = 0;
+                colors[i * 3] = 1; // R
+                colors[i * 3 + 1] = 0.5; // G
+                colors[i * 3 + 2] = 0; // B
+                lifetimes[i] = 0;
+            }
+            
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+            
+            const material = new THREE.PointsMaterial({
+                size: 0.4,
+                vertexColors: true,
+                transparent: true,
+                opacity: 0.9,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false
+            });
+            
+            const particles = new THREE.Points(geometry, material);
+            particles.userData = {
+                positions: positions,
+                colors: colors,
+                lifetimes: lifetimes,
+                velocities: new Array(particleCount).fill(null).map(() => new THREE.Vector3()),
+                particleCount: particleCount
+            };
+            
+            return particles;
+        }
+
+        function updateRocketExhaust(delta) {
+            if (!rocketExhaust || !player) return;
+            
+            const userData = rocketExhaust.userData;
+            const positions = userData.positions;
+            const colors = userData.colors;
+            const lifetimes = userData.lifetimes;
+            const velocities = userData.velocities;
+            
+            // If player is falling into black hole, quickly fade out all particles and stop spawning
+            if (isFalling) {
+                // Quickly expire all existing particles
+                for (let i = 0; i < userData.particleCount; i++) {
+                    if (lifetimes[i] > 0) {
+                        // Accelerate particle expiration
+                        lifetimes[i] -= delta * 5; // 5x faster fade
+                        if (lifetimes[i] <= 0) {
+                            lifetimes[i] = 0;
+                            // Hide particle
+                            positions[i * 3 + 1] = -1000;
+                        } else {
+                            // Fade out existing particles quickly
+                            const lifeRatio = lifetimes[i] / 0.5;
+                            colors[i * 3] = 1.0 * lifeRatio;
+                            colors[i * 3 + 1] = (0.3 + lifeRatio * 0.4) * lifeRatio;
+                            colors[i * 3 + 2] = 0;
+                        }
+                    } else {
+                        // Hide any inactive particles
+                        positions[i * 3 + 1] = -1000;
+                    }
+                }
+                
+                // Update geometry attributes
+                rocketExhaust.geometry.attributes.position.needsUpdate = true;
+                rocketExhaust.geometry.attributes.color.needsUpdate = true;
+                return; // Don't spawn new particles or update normally
+            }
+            
+            // Calculate exhaust position at the center of the rocket (in world space)
+            // Get rocket's forward direction (where the tip points)
+            const forward = new THREE.Vector3(0, 0, 1);
+            forward.applyQuaternion(player.quaternion);
+            
+            // Get rocket's right direction for spread
+            const right = new THREE.Vector3(1, 0, 0);
+            right.applyQuaternion(player.quaternion);
+            
+            // Get rocket's up direction
+            const up = new THREE.Vector3(0, 1, 0);
+            up.applyQuaternion(player.quaternion);
+            
+            // Calculate exhaust position at the center of the rocket
+            // Particles spawn at the rocket's center position
+            const exhaustWorldPos = new THREE.Vector3(
+                player.position.x,
+                player.position.y,
+                player.position.z
+            );
+            
+            // Update existing particles and spawn new ones
+            for (let i = 0; i < userData.particleCount; i++) {
+                if (lifetimes[i] > 0) {
+                    // Update existing particle
+                    lifetimes[i] -= delta;
+                    
+                    if (lifetimes[i] <= 0) {
+                        // Particle expired, hide it
+                        positions[i * 3 + 1] = -1000;
+                        continue;
+                    }
+                    
+                    // Update position (move backward/down relative to rocket)
+                    positions[i * 3] += velocities[i].x * delta;
+                    positions[i * 3 + 1] += velocities[i].y * delta;
+                    positions[i * 3 + 2] += velocities[i].z * delta;
+                    
+                    // Fade out as particle ages
+                    const lifeRatio = lifetimes[i] / 0.5; // 0.5 second lifetime
+                    const opacity = lifeRatio;
+                    
+                    // Color gradient: bright orange/yellow at start, red at end
+                    colors[i * 3] = 1.0; // R - always red/orange
+                    colors[i * 3 + 1] = 0.3 + lifeRatio * 0.4; // G - more yellow when young
+                    colors[i * 3 + 2] = 0; // B
+                } else {
+                    // Spawn new particle (with some randomness)
+                    if (Math.random() < 0.15) { // 15% chance per frame
+                        lifetimes[i] = 0.3 + Math.random() * 0.4; // 0.3-0.7 second lifetime
+                        
+                        // Start at exhaust position
+                        positions[i * 3] = exhaustWorldPos.x + (Math.random() - 0.5) * 0.2;
+                        positions[i * 3 + 1] = exhaustWorldPos.y;
+                        positions[i * 3 + 2] = exhaustWorldPos.z + (Math.random() - 0.5) * 0.2;
+                        
+                        // Determine if rocket is moving
+                        const isMoving = Math.abs(playerVelocityX) > 0.1 || Math.abs(playerVelocityZ) > 0.1;
+                        
+                        // Down direction: straight down in world space if not moving, or relative to rocket angle if moving
+                        let downVel;
+                        if (isMoving) {
+                            // Use rocket's local down direction (negative of up vector)
+                            downVel = up.clone().multiplyScalar(-(3 + Math.random() * 3)); // Down relative to rocket's angle
+                            
+                            // Add some backward component when moving
+                            const speed = 2 + Math.random() * 3;
+                            const backwardVel = forward.clone().multiplyScalar(-speed); // Negative = backward
+                            const spreadVel = right.clone().multiplyScalar((Math.random() - 0.5) * 1.5); // Horizontal spread
+                            velocities[i].copy(backwardVel).add(downVel).add(spreadVel);
+                        } else {
+                            // When not moving, go straight down in world space (no backward component)
+                            downVel = new THREE.Vector3(0, -(3 + Math.random() * 3), 0); // Straight down in world space
+                            const spreadVel = right.clone().multiplyScalar((Math.random() - 0.5) * 1.0); // Small horizontal spread
+                            velocities[i].copy(downVel).add(spreadVel);
+                        }
+                        
+                        // Initial color (bright orange/yellow)
+                        colors[i * 3] = 1.0;
+                        colors[i * 3 + 1] = 0.6 + Math.random() * 0.3;
+                        colors[i * 3 + 2] = 0;
+                    }
+                }
+            }
+            
+            // Update geometry attributes
+            rocketExhaust.geometry.attributes.position.needsUpdate = true;
+            rocketExhaust.geometry.attributes.color.needsUpdate = true;
+        }
+
         function applyAsteroidMaterials(root) {
             root.traverse(obj => {
                 if (!obj.isMesh) return;
@@ -852,15 +1166,21 @@
         // ------------------------------------------------------------
         function ensureMeteors(targetCount) {
             const count = Math.min(targetCount, maxMeteorCount);
+            
+            // Ensure animation array is large enough
+            while (meteorAnimations.length < count) {
+                meteorAnimations.push(null);
+            }
 
             const shadowGeo = new THREE.CircleGeometry(0.9, 16);
 
             // Prototype meteors use spheres
             if (isPrototypeMode) {
                 const meteorGeo = new THREE.SphereGeometry(0.8, 16, 16);
-                const meteorMat = new THREE.MeshStandardMaterial({ color: 0xff6347 });
 
                 while (meteors.length < count) {
+                    // Create a new material instance for each meteor to avoid shared state
+                    const meteorMat = new THREE.MeshStandardMaterial({ color: 0xff6347 });
                     const mesh = new THREE.Mesh(meteorGeo, meteorMat);
                     resetMeteorNearPlayer(mesh, true);
                     scene.add(mesh);
@@ -994,12 +1314,6 @@
             meteor.position.y = randomHeight
                 ? THREE.MathUtils.randFloat(6, 24)
                 : THREE.MathUtils.randFloat(14, 26);
-            
-            // Add horizontal velocity: random drift + player's current velocity
-            const randomDriftX = THREE.MathUtils.randFloat(-0.5, 0.5);
-            const randomDriftZ = THREE.MathUtils.randFloat(-0.5, 0.5);
-            meteor.userData.velocityX = randomDriftX + playerVelocityX;
-            meteor.userData.velocityZ = randomDriftZ + playerVelocityZ;
         }
 
         // ------------------------------------------------------------
@@ -1007,19 +1321,103 @@
         // ------------------------------------------------------------
         function ensureEnemies(targetCount) {
             const count = Math.min(targetCount, maxEnemyCount);
+            
+            // Track maximum requested count (for when model is loading)
+            if (count > maxRequestedEnemyCount) {
+                maxRequestedEnemyCount = count;
+            }
+            
+            // Early return if we already have enough enemies
+            // Make sure activeEnemyCount matches the actual enemy count
+            if (enemies.length >= count) {
+                // Only update activeEnemyCount if it's different to avoid unnecessary work
+                if (activeEnemyCount !== count) {
+                    activeEnemyCount = Math.min(count, enemies.length);
+                }
+                return;
+            }
 
-            const enemyGeo = new THREE.BoxGeometry(1.4, 1.2, 1.4);
-            const enemyMat = new THREE.MeshStandardMaterial({ color: 0xff4444 });
-
-            while (enemies.length < count) {
-                const e = new THREE.Mesh(enemyGeo, enemyMat);
+            // Full mode: prefer OBJ alien model if available
+            function spawnEnemyFromPrototype(prototype) {
+                const e = prototype.clone();
+                e.traverse(obj => {
+                    if (obj.isMesh) {
+                        obj.castShadow = true;
+                        obj.receiveShadow = true;
+                        obj.visible = true;
+                    }
+                });
+                
+                // Random rotation for variety
+                e.rotation.y = Math.random() * Math.PI * 2;
+                
+                // Scale appropriately (3x size)
+                e.scale.set(3.0, 3.0, 3.0);
                 e.position.y = 0.6;
+                e.visible = true;
                 spawnEnemyNearPlayer(e);
                 scene.add(e);
                 enemies.push(e);
             }
 
-            activeEnemyCount = Math.min(count, enemies.length);
+            // If we already have a template, just clone until count reached
+            if (alienTemplate) {
+                while (enemies.length < count) {
+                    spawnEnemyFromPrototype(alienTemplate);
+                }
+                activeEnemyCount = Math.min(count, enemies.length);
+                return;
+            }
+
+            // Wait for alien model to load before creating enemies
+            if (mtlLoader && objLoader && !alienTemplate && !alienTemplateLoading) {
+                alienTemplateLoading = true; // Mark as loading to prevent multiple loads
+                
+                // Load the alien model first
+                mtlLoader.load(
+                    "cute_alien_character.mtl",
+                    function (materials) {
+                        materials.preload(); // This waits for textures to load
+                        objLoader.setMaterials(materials);
+                        objLoader.load(
+                            "cute_alien_character.obj",
+                            function (obj) {
+                                alienTemplate = obj;
+                                alienTemplateLoading = false; // Mark as loaded
+                                
+                                // Apply materials to template
+                                alienTemplate.traverse(obj => {
+                                    if (obj.isMesh) {
+                                        obj.castShadow = true;
+                                        obj.receiveShadow = true;
+                                    }
+                                });
+                                
+                                // Now that the model and textures are loaded, create enemies up to the maximum requested count
+                                const targetCount = Math.min(maxRequestedEnemyCount, maxEnemyCount);
+                                while (enemies.length < targetCount) {
+                                    spawnEnemyFromPrototype(alienTemplate);
+                                }
+                                activeEnemyCount = Math.min(targetCount, enemies.length);
+                            },
+                            undefined,
+                            function (err) {
+                                alienTemplateLoading = false; // Reset on error
+                                console.warn("Could not load cute_alien_character.obj.", err);
+                            }
+                        );
+                    },
+                    undefined,
+                    function (err) {
+                        alienTemplateLoading = false; // Reset on error
+                        console.warn("Could not load cute_alien_character.mtl.", err);
+                    }
+                );
+            } else if (!mtlLoader || !objLoader) {
+                // If loaders aren't available, don't create enemies
+                console.warn("Model loaders not available, cannot create alien enemies.");
+            }
+            // If already loading, enemies will be created when the model finishes loading
         }
 
         function spawnEnemyNearPlayer(enemy) {
@@ -1055,6 +1453,13 @@
                 chkThinkingTime.addEventListener("change", () => {
                     if (computerAI.setThinkingTimeEnabled) {
                         computerAI.setThinkingTimeEnabled(chkThinkingTime.checked);
+                    }
+                });
+            }
+            if (chkEnemyAvoid) {
+                chkEnemyAvoid.addEventListener("change", () => {
+                    if (computerAI.setEnemyAvoidanceEnabled) {
+                        computerAI.setEnemyAvoidanceEnabled(chkEnemyAvoid.checked);
                     }
                 });
             }
@@ -1178,10 +1583,13 @@
                 const gameTime = gameStartTime > 0 ? t - gameStartTime : 0;
                 updateDifficulty(gameTime);
                 updatePlayer(delta);
+                updateRocketExhaust(delta);
                 updateCameraFollow(delta);
+                updateSkyFollow();
 
                 updateMeteors(delta);
                 updateEnemies(delta);
+                updateExplosionDebris(delta);
 
                 checkCollisions();
 
@@ -1190,9 +1598,12 @@
             } else {
                 // Keep visuals alive
                 updatePlayer(delta); // handles falling animation
+                updateRocketExhaust(delta);
                 updateCameraFollow(delta);
+                updateSkyFollow();
                 updateMeteors(delta);
                 updateEnemies(delta);
+                updateExplosionDebris(delta);
             }
 
             renderer.render(scene, camera);
@@ -1227,16 +1638,58 @@
             if (!isGameOver && isFullyInHole(player.position.x, player.position.z, playerRadius)) {
                 isGameOver = true;
                 isFalling = true;
+                blackHoleAnimationStartTime = Date.now() / 1000;
+                
+                // Store initial state
+                initialPlayerScale.copy(player.scale);
+                
+                // Find the black hole the player fell into
+                const hole = findHoleAtPosition(player.position.x, player.position.z);
+                if (hole) {
+                    blackHoleTargetPos.set(hole.x, 0.01, hole.z);
+                } else {
+                    blackHoleTargetPos.set(player.position.x, 0.01, player.position.z);
+                }
+                
                 statusMessage.style.color = "#ffcc66";
             }
 
             if (isGameOver) {
                 if (isFalling) {
-                    player.position.y -= fallSpeed * delta;
-                    if (player.position.y < -2 && !statusMessage.textContent.includes("Game over")) {
+                    const currentTime = Date.now() / 1000;
+                    const elapsed = currentTime - blackHoleAnimationStartTime;
+                    const progress = Math.min(elapsed / blackHoleAnimationDuration, 1.0);
+                    
+                    // Spinning animation - rotate around all axes (faster as it gets pulled in)
+                    const spinMultiplier = 1.0 + progress * 2.0; // Spin faster as it shrinks
+                    player.rotation.x += blackHoleSpinSpeed * Math.PI * 2 * delta * 0.3 * spinMultiplier;
+                    player.rotation.y += blackHoleSpinSpeed * Math.PI * 2 * delta * spinMultiplier;
+                    player.rotation.z += blackHoleSpinSpeed * Math.PI * 2 * delta * 0.5 * spinMultiplier;
+                    
+                    // Shrinking animation - scale down to 0
+                    // Use easing for more dramatic effect (ease-in cubic)
+                    const easedProgress = 1.0 - Math.pow(1.0 - progress, 3);
+                    const easedScale = 1.0 - easedProgress;
+                    player.scale.set(
+                        initialPlayerScale.x * easedScale,
+                        initialPlayerScale.y * easedScale,
+                        initialPlayerScale.z * easedScale
+                    );
+                    
+                    // Move towards black hole center (stronger pull as it gets closer)
+                    const pullStrength = easedProgress * 0.8;
+                    const targetX = THREE.MathUtils.lerp(player.position.x, blackHoleTargetPos.x, pullStrength * delta * 3);
+                    const targetZ = THREE.MathUtils.lerp(player.position.z, blackHoleTargetPos.z, pullStrength * delta * 3);
+                    player.position.x = targetX;
+                    player.position.z = targetZ;
+                    
+                    // Slight downward movement (faster as it shrinks)
+                    player.position.y -= 3 * delta * easedProgress;
+                    
+                    if (progress >= 1.0 && !statusMessage.textContent.includes("Game over")) {
                         statusMessage.textContent =
                             "Game over! Final score " + score.toFixed(1) +
-                            ". You fell into a hole! Press R or switch mode to restart.";
+                            ". You were consumed by a black hole! Press R or switch mode to restart.";
                     }
                 }
                 return;
@@ -1252,18 +1705,20 @@
 
                 const meteorData = meteors.map(m => ({
                     position: { x: m.position.x, y: m.position.y, z: m.position.z },
-                    velocity: { 
-                        x: m.userData.velocityX || 0, 
-                        y: -meteorFallSpeed, 
-                        z: m.userData.velocityZ || 0 
-                    }
+                    velocity: { x: 0, y: -meteorFallSpeed, z: 0 }
+                }));
+
+                const enemyData = enemies.slice(0, activeEnemyCount).map(e => ({
+                    position: { x: e.position.x, y: e.position.y, z: e.position.z }
                 }));
 
                 const move = computerAI.suggestMove(
                     meteorData,
                     { x: player.position.x, y: player.position.y, z: player.position.z },
                     score,
-                    aiLevel
+                    aiLevel,
+                    enemyData,
+                    holes
                 );
 
                 const worldDx = move.dx || 0;
@@ -1324,33 +1779,371 @@
         function updateMeteors(delta) {
             const speedBoost = score * 0.15;
             const fallSpeed = baseMeteorSpeed + speedBoost;
+            const currentTime = Date.now() / 1000;
 
             for (let i = 0; i < meteors.length; i++) {
                 const m = meteors[i];
                 const s = meteorShadows[i];
+                
+                // Check if this meteor is currently animating
+                const animData = meteorAnimations[i];
+                
+                if (animData && animData.isAnimating) {
+                    // Handle collision animation
+                    const elapsed = currentTime - animData.startTime;
+                    const progress = Math.min(elapsed / meteorAnimationDuration, 1.0);
+                    
+                    // If meteor is hidden, debris explosion is active - skip old animation
+                    if (!m.visible) {
+                        // Just wait for animation duration, then reset
+                        if (progress >= 1.0) {
+                            // Animation complete - reset meteor (debris animation handles visual)
+                            const originalScale = animData.originalScale || new THREE.Vector3(1, 1, 1);
+                            meteorAnimations[i] = null;
+                            resetMeteorNearPlayer(m, false);
+                            // Restore original scale and make visible again
+                            m.scale.copy(originalScale);
+                            m.visible = true;
+                            if (m.traverse) {
+                                m.traverse(obj => {
+                                    if (obj.isMesh && obj.material) {
+                                        if (Array.isArray(obj.material)) {
+                                            obj.material.forEach(mat => {
+                                                mat.opacity = 1.0;
+                                            });
+                                        } else {
+                                            obj.material.opacity = 1.0;
+                                        }
+                                    }
+                                });
+                            }
+                            // Update shadow position and visibility when reset
+                            if (s) {
+                                s.visible = true;
+                                s.position.x = m.position.x;
+                                s.position.z = m.position.z;
+                                // Reset shadow scale and opacity for new position
+                                const t = THREE.MathUtils.clamp((m.position.y - 2) / 18, 0, 1);
+                                const scale = THREE.MathUtils.lerp(1.5, 0.4, t);
+                                s.scale.set(scale, scale, 1);
+                                s.material.opacity = THREE.MathUtils.lerp(0.55, 0.15, t);
+                            }
+                        }
+                        // Skip the old animation code when debris is active - update shadow and continue to next meteor
+                        if (s) s.visible = false;
+                        continue;
+                    }
+                    
+                    if (progress < 1.0) {
+                        // Animation in progress (old animation - only if meteor is still visible)
+                        // Scale up then down (explosion effect)
+                        const scaleProgress = progress < 0.3 
+                            ? progress / 0.3  // Scale up in first 30%
+                            : 1.0 - ((progress - 0.3) / 0.7); // Scale down in remaining 70%
+                        
+                        const baseScale = animData.initialScale || 1.0;
+                        const explosionScale = baseScale * (1.0 + scaleProgress * 1.5); // Scale up to 2.5x
+                        m.scale.set(explosionScale, explosionScale, explosionScale);
+                        
+                        // Rapid rotation during explosion
+                        m.rotation.x += 12 * delta;
+                        m.rotation.y += 12 * delta;
+                        m.rotation.z += 12 * delta;
+                        
+                        // Fade out
+                        if (m.material && m.material.opacity !== undefined) {
+                            m.material.opacity = 1.0 - progress;
+                            m.material.transparent = true;
+                        } else if (m.traverse) {
+                            m.traverse(obj => {
+                                if (obj.isMesh && obj.material) {
+                                    if (Array.isArray(obj.material)) {
+                                        obj.material.forEach(mat => {
+                                            mat.opacity = 1.0 - progress;
+                                            mat.transparent = true;
+                                        });
+                                    } else {
+                                        obj.material.opacity = 1.0 - progress;
+                                        obj.material.transparent = true;
+                                    }
+                                }
+                            });
+                        }
+                        
+                        // Keep at ground level
+                        m.position.y = 0.1;
+                        
+                        // Hide shadow during animation
+                        if (s) s.visible = false;
+                    } else {
+                        // Animation complete - reset meteor (debris animation handles visual)
+                        const originalScale = animData.originalScale || new THREE.Vector3(1, 1, 1);
+                        meteorAnimations[i] = null;
+                        resetMeteorNearPlayer(m, false);
+                        // Restore original scale and make visible again
+                        m.scale.copy(originalScale);
+                        m.visible = true;
+                        if (m.traverse) {
+                            m.traverse(obj => {
+                                if (obj.isMesh && obj.material) {
+                                    if (Array.isArray(obj.material)) {
+                                        obj.material.forEach(mat => {
+                                            mat.opacity = 1.0;
+                                        });
+                                    } else {
+                                        obj.material.opacity = 1.0;
+                                    }
+                                }
+                            });
+                        }
+                        // Update shadow position and visibility
+                        if (s) {
+                            s.visible = true;
+                            s.position.x = m.position.x;
+                            s.position.z = m.position.z;
+                            // Reset shadow scale and opacity for new position
+                            const t = THREE.MathUtils.clamp((m.position.y - 2) / 18, 0, 1);
+                            const scale = THREE.MathUtils.lerp(1.5, 0.4, t);
+                            s.scale.set(scale, scale, 1);
+                            s.material.opacity = THREE.MathUtils.lerp(0.55, 0.15, t);
+                        }
+                    }
+                } else {
+                    // Normal falling behavior
+                    m.position.y -= fallSpeed * delta;
+                    m.rotation.x += 0.8 * delta;
+                    m.rotation.y += 0.5 * delta;
 
-                // Apply horizontal velocity
-                if (m.userData.velocityX !== undefined) {
-                    m.position.x += m.userData.velocityX * delta;
-                    m.position.z += m.userData.velocityZ * delta;
+                    // Check for ground collision
+                    if (m.position.y <= 0.1) {
+                        // Get meteor material for debris (before hiding)
+                        let meteorMat = null;
+                        if (m.material) {
+                            meteorMat = m.material;
+                        } else if (m.traverse) {
+                            m.traverse(obj => {
+                                if (obj.isMesh && obj.material && !meteorMat) {
+                                    meteorMat = Array.isArray(obj.material) ? obj.material[0] : obj.material;
+                                }
+                            });
+                        }
+                        
+                        // Hide meteor immediately and trigger debris explosion
+                        m.visible = false;
+                        if (s) s.visible = false;
+                        
+                        // Create debris explosion at collision point
+                        activateDebrisExplosion(m.position.clone(), meteorMat);
+                        
+                        // Reset meteor after a short delay (debris will handle visual)
+                        meteorAnimations[i] = {
+                            isAnimating: true,
+                            startTime: currentTime,
+                            initialScale: m.scale.x,
+                            originalScale: new THREE.Vector3().copy(m.scale)
+                        };
+                        m.position.y = 0.1; // Snap to ground
+                    }
+
+                    // Update shadow
+                    if (s) {
+                        s.visible = m.visible; // Ensure shadow visibility matches meteor visibility
+                        s.position.x = m.position.x;
+                        s.position.z = m.position.z;
+
+                        const t = THREE.MathUtils.clamp((m.position.y - 2) / 18, 0, 1);
+                        const scale = THREE.MathUtils.lerp(1.5, 0.4, t);
+                        s.scale.set(scale, scale, 1);
+                        s.material.opacity = THREE.MathUtils.lerp(0.55, 0.15, t);
+                    }
+                }
+            }
+        }
+
+        // ------------------------------------------------------------
+        // Explosion Debris System (Pre-baked)
+        // ------------------------------------------------------------
+        function createDebrisPool() {
+            // Create a pool of random debris pieces that look like meteor fragments
+            debrisPool = [];
+            
+            for (let i = 0; i < debrisPoolSize; i++) {
+                // Create random irregular shapes for debris
+                const size = Math.random() * 0.2 + 0.15; // Random size between 0.15 and 0.35 (larger for visibility)
+                
+                // Use different geometries for variety
+                let debrisGeo;
+                const geoType = Math.random();
+                if (geoType < 0.33) {
+                    debrisGeo = new THREE.BoxGeometry(size, size * 0.8, size * 1.2);
+                } else if (geoType < 0.66) {
+                    debrisGeo = new THREE.OctahedronGeometry(size, 0);
+                } else {
+                    debrisGeo = new THREE.TetrahedronGeometry(size, 0);
                 }
                 
-                m.position.y -= fallSpeed * delta;
-                m.rotation.x += 0.8 * delta;
-                m.rotation.y += 0.5 * delta;
-
-                if (m.position.y < -4) {
-                    resetMeteorNearPlayer(m, false);
+                // Create material - will be updated based on mode when used
+                const debrisMat = new THREE.MeshStandardMaterial({ 
+                    color: 0xff6347,
+                    transparent: true,
+                    opacity: 1.0
+                });
+                
+                const piece = new THREE.Mesh(debrisGeo, debrisMat);
+                piece.visible = false; // Start hidden
+                piece.castShadow = true;
+                piece.receiveShadow = true;
+                
+                scene.add(piece);
+                debrisPool.push(piece);
+            }
+        }
+        
+        function activateDebrisExplosion(position, meteorMaterial) {
+            // Activate debrisCount pieces from the pool for this explosion
+            const availableDebris = debrisPool.filter(p => !p.visible);
+            const countToUse = debrisCount; // Always try to use full count
+            
+            for (let i = 0; i < countToUse; i++) {
+                let piece;
+                
+                // Get piece from pool if available, otherwise create new one dynamically
+                if (i < availableDebris.length) {
+                    piece = availableDebris[i];
+                } else {
+                    // Pool exhausted - create new piece dynamically
+                    const size = Math.random() * 0.2 + 0.15;
+                    let debrisGeo;
+                    const geoType = Math.random();
+                    if (geoType < 0.33) {
+                        debrisGeo = new THREE.BoxGeometry(size, size * 0.8, size * 1.2);
+                    } else if (geoType < 0.66) {
+                        debrisGeo = new THREE.OctahedronGeometry(size, 0);
+                    } else {
+                        debrisGeo = new THREE.TetrahedronGeometry(size, 0);
+                    }
+                    
+                    const debrisMat = new THREE.MeshStandardMaterial({ 
+                        color: 0xff6347,
+                        transparent: true,
+                        opacity: 1.0
+                    });
+                    
+                    piece = new THREE.Mesh(debrisGeo, debrisMat);
+                    piece.castShadow = true;
+                    piece.receiveShadow = true;
+                    scene.add(piece);
+                    debrisPool.push(piece); // Add to pool for future reuse
                 }
-
-                if (s) {
-                    s.position.x = m.position.x;
-                    s.position.z = m.position.z;
-
-                    const t = THREE.MathUtils.clamp((m.position.y - 2) / 18, 0, 1);
-                    const scale = THREE.MathUtils.lerp(1.5, 0.4, t);
-                    s.scale.set(scale, scale, 1);
-                    s.material.opacity = THREE.MathUtils.lerp(0.55, 0.15, t);
+                
+                // Update material based on mode
+                if (isPrototypeMode) {
+                    piece.material.color.setHex(0xff6347);
+                    piece.material.opacity = 1.0;
+                    piece.material.transparent = true;
+                } else if (meteorMaterial) {
+                    // Clone the meteor's material for full mode
+                    if (meteorMaterial.clone) {
+                        const clonedMat = meteorMaterial.clone();
+                        clonedMat.opacity = 1.0;
+                        clonedMat.transparent = true;
+                        piece.material = clonedMat;
+                    } else {
+                        // Fallback: use default color
+                        piece.material.color.setHex(0xff6347);
+                        piece.material.opacity = 1.0;
+                        piece.material.transparent = true;
+                    }
+                } else {
+                    // Default material
+                    piece.material.color.setHex(0xff6347);
+                    piece.material.opacity = 1.0;
+                    piece.material.transparent = true;
+                }
+                
+                // Reset piece state
+                piece.position.copy(position);
+                piece.position.y = Math.max(position.y, 0.2); // Ensure debris starts slightly above ground
+                piece.visible = true;
+                
+                // Random initial rotation
+                piece.rotation.set(
+                    Math.random() * Math.PI * 2,
+                    Math.random() * Math.PI * 2,
+                    Math.random() * Math.PI * 2
+                );
+                
+                // Random explosion velocity (outward in all directions)
+                const angle = Math.random() * Math.PI * 2; // Random horizontal direction
+                const verticalAngle = Math.random() * Math.PI * 0.5; // 0 to 90 degrees up
+                const speed = Math.random() * 4 + 2; // Random speed between 2 and 6
+                
+                const velocity = new THREE.Vector3(
+                    Math.cos(angle) * Math.sin(verticalAngle) * speed,
+                    Math.cos(verticalAngle) * speed,
+                    Math.sin(angle) * Math.sin(verticalAngle) * speed
+                );
+                
+                // Random angular velocity for rotation
+                const angularVelocity = new THREE.Vector3(
+                    (Math.random() - 0.5) * 10,
+                    (Math.random() - 0.5) * 10,
+                    (Math.random() - 0.5) * 10
+                );
+                
+                // Store animation data
+                activeDebris.push({
+                    piece: piece,
+                    velocity: velocity,
+                    angularVelocity: angularVelocity,
+                    startTime: Date.now() / 1000,
+                    lifetime: debrisLifetime
+                });
+            }
+        }
+        
+        function updateExplosionDebris(delta) {
+            const gravity = -9.8; // Gravity acceleration
+            const currentTime = Date.now() / 1000;
+            
+            for (let i = activeDebris.length - 1; i >= 0; i--) {
+                const data = activeDebris[i];
+                const piece = data.piece;
+                
+                const elapsed = currentTime - data.startTime;
+                const lifeProgress = elapsed / data.lifetime;
+                
+                // Remove if lifetime expired
+                if (lifeProgress >= 1.0) {
+                    piece.visible = false;
+                    activeDebris.splice(i, 1);
+                    continue;
+                }
+                
+                // Apply physics
+                // Update velocity (gravity affects Y)
+                data.velocity.y += gravity * delta;
+                
+                // Update position
+                piece.position.addScaledVector(data.velocity, delta);
+                
+                // Update rotation (same animation, but with random rotation)
+                piece.rotation.x += data.angularVelocity.x * delta;
+                piece.rotation.y += data.angularVelocity.y * delta;
+                piece.rotation.z += data.angularVelocity.z * delta;
+                
+                // Fade out over time
+                piece.material.opacity = 1.0 - lifeProgress;
+                
+                // Stop at ground level with bounce
+                if (piece.position.y < 0.1) {
+                    piece.position.y = 0.1;
+                    data.velocity.y *= -0.3; // Bounce with energy loss
+                    data.velocity.x *= 0.8; // Friction
+                    data.velocity.z *= 0.8;
+                    
+                    // Slow down rotation when on ground
+                    data.angularVelocity.multiplyScalar(0.9);
                 }
             }
         }
@@ -1360,12 +2153,24 @@
         // ------------------------------------------------------------
         function updateEnemies(delta) {
             if (activeEnemyCount <= 0) return;
+            if (!player) return;
 
             const enemySpeed = 2.6 + Math.min(4.0, score * 0.03);
 
             for (let i = 0; i < activeEnemyCount; i++) {
                 const e = enemies[i];
                 if (!e) continue;
+                
+                // Ensure enemy is still in scene and visible
+                if (!scene.children.includes(e)) {
+                    console.warn("Enemy", i, "not in scene, re-adding");
+                    scene.add(e);
+                }
+                if (!e.visible) {
+                    console.warn("Enemy", i, "not visible, making visible");
+                    e.visible = true;
+                    e.traverse(obj => { obj.visible = true; });
+                }
 
                 const dx = player.position.x - e.position.x;
                 const dz = player.position.z - e.position.z;
@@ -1374,6 +2179,11 @@
                 if (d > 0.001) {
                     e.position.x += (dx / d) * enemySpeed * delta;
                     e.position.z += (dz / d) * enemySpeed * delta;
+                    
+                    // Make enemy face the player
+                    // atan2(dx, dz) gives the angle in the XZ plane
+                    // In Three.js, rotation.y rotates around Y axis (0 = +Z direction)
+                    e.rotation.y = Math.atan2(dx, dz);
                 }
 
                 if (d > 60) {
@@ -1431,26 +2241,35 @@
         }
 
         // ------------------------------------------------------------
-        // Hole detection (same rules you used)
+        // Hole detection using circular boundaries
         // ------------------------------------------------------------
         function isFullyInHole(x, z, playerRadius) {
             for (const h of holes) {
-                const leftEdge = x - playerRadius;
-                const rightEdge = x + playerRadius;
-                const frontEdge = z - playerRadius;
-                const backEdge = z + playerRadius;
-
-                const holeLeft = h.x - h.halfSize;
-                const holeRight = h.x + h.halfSize;
-                const holeFront = h.z - h.halfSize;
-                const holeBack = h.z + h.halfSize;
-
-                if (leftEdge >= holeLeft && rightEdge <= holeRight &&
-                    frontEdge >= holeFront && backEdge <= holeBack) {
+                // Calculate distance from player center to black hole center
+                const dx = x - h.x;
+                const dz = z - h.z;
+                const distance = Math.sqrt(dx * dx + dz * dz);
+                
+                // Player's circle is fully inside black hole's circle if:
+                // distance from centers + player radius <= black hole radius
+                if (distance + playerRadius <= h.halfSize) {
                     return true;
                 }
             }
             return false;
+        }
+
+        function findHoleAtPosition(x, z) {
+            // Find the hole that contains this position
+            for (const h of holes) {
+                const dist = Math.sqrt(
+                    Math.pow(x - h.x, 2) + Math.pow(z - h.z, 2)
+                );
+                if (dist <= h.halfSize) {
+                    return h;
+                }
+            }
+            return null;
         }
 
         // ------------------------------------------------------------
