@@ -10,6 +10,8 @@ class ComputerAI {
         this.pathStartTime = 0;
         this.pathEndTime = 0; // When the current path finishes
         this.waitEndTime = 0; // When the wait period finishes
+        this.enableHoleAvoidance = true;
+        this.enableThinkingTime = true;
     }
 
     /**
@@ -40,7 +42,8 @@ class ComputerAI {
             
             // Calculate wait time: 500ms - (level × 50ms)
             // Level 1: 450ms wait, Level 10: 0ms wait
-            const waitTimeMs = 500 - (aiLevel * 50);
+            // If thinking time is disabled, there is no forced wait.
+            const waitTimeMs = this.enableThinkingTime ? (500 - (aiLevel * 50)) : 0;
             const waitTimeSec = Math.max(0, waitTimeMs) / 1000;
             this.waitEndTime = this.pathEndTime + waitTimeSec;
             
@@ -86,6 +89,8 @@ class ComputerAI {
             console.log(`Prediction time: ${predictionTime.toFixed(2)}s`);
             console.log(`Meteors: ${meteors.length}, Predicted: ${predictedMeteors.length}`);
         }
+
+        const sqrt22 = Math.sqrt(2) / 2;
         
         // Evaluate possible paths
         const directions = [
@@ -94,10 +99,10 @@ class ComputerAI {
             { dx: 1, dz: 0, name: 'right' },
             { dx: 0, dz: -1, name: 'forward' },
             { dx: 0, dz: 1, name: 'backward' },
-            { dx: -0.707, dz: -0.707, name: 'left-forward' },
-            { dx: 0.707, dz: -0.707, name: 'right-forward' },
-            { dx: -0.707, dz: 0.707, name: 'left-backward' },
-            { dx: 0.707, dz: 0.707, name: 'right-backward' }
+            { dx: -sqrt22, dz: -sqrt22, name: 'left-forward' },
+            { dx: sqrt22, dz: -sqrt22, name: 'right-forward' },
+            { dx: -sqrt22, dz: sqrt22, name: 'left-backward' },
+            { dx: sqrt22, dz: sqrt22, name: 'right-backward' }
         ];
         
         let bestPath = null;
@@ -155,6 +160,10 @@ class ComputerAI {
      * This checks the AI's movement path to avoid falling through holes.
      */
     pathContainsHole(direction, startPos, predictedMeteors, pathDuration, lookaheadPercent) {
+        // If hole avoidance is disabled, we never treat paths through holes as bad.
+        if (!this.enableHoleAvoidance) {
+            return false;
+        }
         const holeSpecs = [
             { x: -6, z: 6, halfSize: 2.5 },
             { x: 8,  z: -2, halfSize: 2.2 },
@@ -298,7 +307,7 @@ class ComputerAI {
             }
         }
 
-        if(this.pathContainsHole(direction, startPos, predictedMeteors, pathDuration, lookaheadPercent)) {
+        if (this.pathContainsHole(direction, startPos, predictedMeteors, pathDuration, lookaheadPercent)) {
             score -= 20 * aiLevel;
         }
         
@@ -316,6 +325,20 @@ class ComputerAI {
         this.pathStartTime = 0;
         this.pathEndTime = 0;
         this.waitEndTime = 0;
+    }
+
+    /**
+     * Enable or disable hole avoidance behavior.
+     */
+    setHoleAvoidanceEnabled(enabled) {
+        this.enableHoleAvoidance = !!enabled;
+    }
+
+    /**
+     * Enable or disable thinking-time (pause) between paths.
+     */
+    setThinkingTimeEnabled(enabled) {
+        this.enableThinkingTime = !!enabled;
     }
 }
 
