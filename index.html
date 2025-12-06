@@ -250,6 +250,14 @@
         let mtlLoader;
         let objLoader;
         let asteroidTemplate = null; // loaded OBJ for full-mode meteors
+        let rocketShipTemplate = null; // loaded OBJ for player
+        
+        // Simple texture cache
+        const textures = {
+            rocketBase: null,
+            asteroidColor: null,
+            asteroidNormal: null
+        };
 
         const scoreDisplay = document.getElementById("scoreDisplay");
         const statusMessage = document.getElementById("statusMessage");
@@ -301,6 +309,7 @@
             scene.add(dirLight);
 
             textureLoader = new THREE.TextureLoader();
+            initTextures();
 
             if (typeof THREE !== "undefined" && THREE.GLTFLoader) {
                 gltfLoader = new THREE.GLTFLoader();
@@ -314,8 +323,10 @@
             // OBJ / MTL loaders for asteroid model in full mode
             if (typeof THREE !== "undefined" && THREE.MTLLoader) {
                 mtlLoader = new THREE.MTLLoader();
+                mtlLoader.setPath("assets/");
             } else if (typeof MTLLoader !== "undefined") {
                 mtlLoader = new MTLLoader();
+                mtlLoader.setPath("assets/");
             } else {
                 console.warn("MTLLoader not found; full-mode asteroids will fall back to spheres.");
                 mtlLoader = null;
@@ -323,8 +334,10 @@
 
             if (typeof THREE !== "undefined" && THREE.OBJLoader) {
                 objLoader = new THREE.OBJLoader();
+                objLoader.setPath("assets/");
             } else if (typeof OBJLoader !== "undefined") {
                 objLoader = new OBJLoader();
+                objLoader.setPath("assets/");
             } else {
                 console.warn("OBJLoader not found; full-mode asteroids will fall back to spheres.");
                 objLoader = null;
@@ -334,6 +347,37 @@
             setMode(true);
             setupInput();
             window.addEventListener("resize", onWindowResize);
+        }
+
+        function initTextures() {
+            // Rocket ship base color
+            textures.rocketBase = textureLoader.load(
+                "assets/Rocketship_baseColor.png",
+                undefined,
+                undefined,
+                function () {
+                    console.warn("Failed to load Rocketship_baseColor.png");
+                }
+            );
+
+            // Asteroid textures
+            textures.asteroidColor = textureLoader.load(
+                "assets/Asteroid2b_Color_1K.png",
+                undefined,
+                undefined,
+                function () {
+                    console.warn("Failed to load Asteroid2b_Color_1K.png");
+                }
+            );
+
+            textures.asteroidNormal = textureLoader.load(
+                "assets/Asteroid2b_NormalGL_1K.png",
+                undefined,
+                undefined,
+                function () {
+                    console.warn("Failed to load Asteroid2b_NormalGL_1K.png");
+                }
+            );
         }
 
         function computeCameraBasis() {
@@ -473,10 +517,12 @@
         }
 
         function createPrototypePlayerAndMeteors() {
+            // Prototype mode uses a simple box
             const playerGeo = new THREE.BoxGeometry(1.5, 1, 2);
             const playerMat = new THREE.MeshStandardMaterial({ color: 0x4caf50 });
             player = new THREE.Mesh(playerGeo, playerMat);
             player.position.set(0, 1, 0);
+            player.rotation.y = -Math.PI / 4; // 45 degrees clockwise from top-down
             scene.add(player);
 
             const meteorGeo = new THREE.SphereGeometry(0.8, 16, 16);
@@ -504,37 +550,62 @@
         }
 
         function createFullPlayerAndMeteors() {
-            const fallbackPlayer = createFallbackFullPlayer();
-            player = fallbackPlayer;
-            scene.add(player);
+            // --- Player (rocket) ---
+            if (rocketShipTemplate) {
+                // Already loaded once – just clone
+                player = rocketShipTemplate.clone();
+                applyRocketMaterials(player);
+                player.scale.set(1.5, 1.5, 1.5);
+                player.position.set(0, 1, 0);
+                player.rotation.y = -Math.PI / 4; // 45 degrees clockwise from top-down
+                scene.add(player);
+            } else if (mtlLoader && objLoader) {
+                // Load rocket from OBJ/MTL once
+                const fallbackPlayer = createFallbackFullPlayer();
+                player = fallbackPlayer;
+                player.rotation.y = -Math.PI / 4; // 45 degrees clockwise from top-down
+                scene.add(player);
+                
+                mtlLoader.load(
+                    "cartoon_rocket_ship.mtl",
+                    function (materials) {
+                        materials.preload();
+                        objLoader.setMaterials(materials);
+                        objLoader.load(
+                            "cartoon_rocket_ship.obj",
+                            function (obj) {
+                                rocketShipTemplate = obj;
+                                if (player) scene.remove(player);
 
-            if (gltfLoader) {
-                // TODO: change path to your real .glb model
-                gltfLoader.load(
-                    "assets/models/spaceship.glb",
-                    function (gltf) {
-                        if (player) scene.remove(player);
-                        player = gltf.scene;
-                        player.traverse(obj => {
-                            if (obj.isMesh) {
-                                obj.castShadow = true;
-                                obj.receiveShadow = true;
+                                player = rocketShipTemplate.clone();
+                                applyRocketMaterials(player);
+                                player.scale.set(1.5, 1.5, 1.5);
+                                player.position.set(0, 1, 0);
+                                player.rotation.y = -Math.PI / 4; // 45 degrees clockwise from top-down
+                                scene.add(player);
+                            },
+                            undefined,
+                            function (err) {
+                                console.warn("Could not load rocket ship OBJ, using fallback player.", err);
                             }
-                        });
-                        player.scale.set(1.8, 1.8, 1.8);
-                        player.position.set(0, 1, 0);
-                        scene.add(player);
+                        );
                     },
                     undefined,
                     function (err) {
-                        console.warn("Could not load spaceship model, using fallback rocket.", err);
+                        console.warn("Could not load rocket ship MTL, using fallback player.", err);
                     }
                 );
+            } else {
+                // No loaders – use basic cylinder+cone
+                const fallbackPlayer = createFallbackFullPlayer();
+                player = fallbackPlayer;
+                player.rotation.y = -Math.PI / 4; // 45 degrees clockwise from top-down
+                scene.add(player);
             }
 
+            // --- Meteors + shadows ---
             const shadowGeo = new THREE.CircleGeometry(0.9, 16);
 
-            // Helper to create a meteor + shadow from a given mesh prototype
             function spawnMeteorFromPrototype(prototype) {
                 const mesh = prototype.clone();
                 mesh.traverse(obj => {
@@ -543,6 +614,14 @@
                         obj.receiveShadow = true;
                     }
                 });
+
+                mesh.rotation.x = Math.random() * Math.PI * 2;
+                mesh.rotation.y = Math.random() * Math.PI * 2;
+                mesh.rotation.z = Math.random() * Math.PI * 2;
+
+                const scale = Math.random() * 0.2 + 0.8;
+                mesh.scale.set(scale, scale, scale);
+
                 resetMeteorPosition(mesh, true);
                 scene.add(mesh);
                 meteors.push(mesh);
@@ -559,7 +638,7 @@
                 meteorShadows.push(shadow);
             }
 
-            // If we've already loaded the asteroid OBJ once, just clone it.
+            // If we already have the asteroid OBJ, just clone it
             if (asteroidTemplate) {
                 for (let i = 0; i < meteorCount; i++) {
                     spawnMeteorFromPrototype(asteroidTemplate);
@@ -567,57 +646,52 @@
                 return;
             }
 
-            // Try to load the asteroid OBJ / MTL for full-mode meteors.
+            // Try to load asteroid OBJ/MTL once
             if (mtlLoader && objLoader) {
                 mtlLoader.load(
-                    "assets/Asteroid_2b.mtl",
+                    "Asteroid_2b.mtl",
                     function (materials) {
                         materials.preload();
                         objLoader.setMaterials(materials);
                         objLoader.load(
-                            "assets/Asteroid_2b.obj",
+                            "Asteroid_2b.obj",
                             function (obj) {
                                 asteroidTemplate = obj;
+                                applyAsteroidMaterials(asteroidTemplate);
                                 for (let i = 0; i < meteorCount; i++) {
                                     spawnMeteorFromPrototype(asteroidTemplate);
                                 }
                             },
                             undefined,
                             function (err) {
-                                console.warn("Could not load asteroid OBJ, falling back to rock spheres.", err);
+                                console.warn("Could not load asteroid OBJ, falling back to sphere asteroids.", err);
                                 createFallbackRockMeteors();
                             }
                         );
                     },
                     undefined,
                     function (err) {
-                        console.warn("Could not load asteroid MTL, falling back to rock spheres.", err);
+                        console.warn("Could not load asteroid MTL, falling back to sphere asteroids.", err);
                         createFallbackRockMeteors();
                     }
                 );
             } else {
-                // If loaders are unavailable, use the original rock-textured spheres.
+                // No loaders – sphere asteroids with textures
                 createFallbackRockMeteors();
             }
 
-            // Original rock-sphere implementation kept as a fallback.
+            // Fallback: textured spheres using asteroid PNGs
             function createFallbackRockMeteors() {
                 const meteorGeo = new THREE.SphereGeometry(0.8, 24, 24);
 
-                const rockTexture = textureLoader.load(
-                    "assets/textures/rock.jpg",
-                    function () {},
-                    undefined,
-                    function () {
-                        console.warn("Could not load rock texture, using plain color.");
-                    }
-                );
-
                 for (let i = 0; i < meteorCount; i++) {
                     const mat = new THREE.MeshStandardMaterial({
-                        map: rockTexture,
-                        color: 0xffffff
+                        map: textures.asteroidColor || null,
+                        normalMap: textures.asteroidNormal || null,
+                        metalness: 0.1,
+                        roughness: 0.9
                     });
+
                     const mesh = new THREE.Mesh(meteorGeo, mat);
                     resetMeteorPosition(mesh, true);
                     scene.add(mesh);
@@ -652,6 +726,41 @@
             group.add(nose);
             group.position.set(0, 1, 0);
             return group;
+        }
+
+        function applyRocketMaterials(root) {
+            root.traverse(obj => {
+                if (!obj.isMesh) return;
+
+                obj.castShadow = true;
+                obj.receiveShadow = true;
+
+                if (textures.rocketBase) {
+                    obj.material = new THREE.MeshStandardMaterial({
+                        map: textures.rocketBase,
+                        metalness: 0.3,
+                        roughness: 0.6
+                    });
+                } else if (obj.material) {
+                    obj.material = obj.material.clone();
+                }
+            });
+        }
+
+        function applyAsteroidMaterials(root) {
+            root.traverse(obj => {
+                if (!obj.isMesh) return;
+
+                obj.castShadow = true;
+                obj.receiveShadow = true;
+
+                obj.material = new THREE.MeshStandardMaterial({
+                    map: textures.asteroidColor || null,
+                    normalMap: textures.asteroidNormal || null,
+                    metalness: 0.1,
+                    roughness: 0.9
+                });
+            });
         }
 
         function setPrototypeMaterials() {
@@ -906,7 +1015,11 @@
                 if (moveState.backward) iz -= 1;   // S / ArrowDown -> move "down" on screen
             }
 
+            // If no input, return to neutral tilt and exit
             if (ix === 0 && iz === 0) {
+                const maxTilt = 0.35;
+                player.rotation.x = THREE.MathUtils.lerp(player.rotation.x, 0, 0.15);
+                player.rotation.z = THREE.MathUtils.lerp(player.rotation.z, 0, 0.15);
                 return;
             }
 
@@ -929,12 +1042,17 @@
             player.position.x = THREE.MathUtils.clamp(newX, -half, half);
             player.position.z = THREE.MathUtils.clamp(newZ, -half, half);
 
+            // Tilt in the direction of movement (only when actually moving)
             const maxTilt = 0.35;
-            const targetTiltZ = THREE.MathUtils.clamp(-ix * maxTilt, -maxTilt, maxTilt);
-            const targetTiltX = THREE.MathUtils.clamp(-iz * maxTilt, -maxTilt, maxTilt);
-
-            player.rotation.z = THREE.MathUtils.lerp(player.rotation.z, targetTiltZ, 0.15);
+            const normalizedMove = new THREE.Vector3(worldMove.x, 0, worldMove.z).normalize();
+            // Tilt forward/backward based on Z movement, left/right based on X movement
+            // Forward (Z+) → tilt forward (rotation.x+), Backward (Z-) → tilt backward (rotation.x-)
+            // Left (X-) → tilt left (rotation.z+), Right (X+) → tilt right (rotation.z-)
+            const targetTiltX = THREE.MathUtils.clamp(normalizedMove.z * maxTilt, -maxTilt, maxTilt);
+            const targetTiltZ = THREE.MathUtils.clamp(-normalizedMove.x * maxTilt, -maxTilt, maxTilt);
+            
             player.rotation.x = THREE.MathUtils.lerp(player.rotation.x, targetTiltX, 0.15);
+            player.rotation.z = THREE.MathUtils.lerp(player.rotation.z, targetTiltZ, 0.15);
         }
 
         function updateMeteors(delta) {
