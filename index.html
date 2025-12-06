@@ -242,6 +242,13 @@
 
         let score = 0;
         let lastTime = 0;
+        let gameStartTime = 0; // Track when current game started
+        
+        // Player velocity tracking
+        let playerVelocityX = 0;
+        let playerVelocityZ = 0;
+        let lastPlayerX = 0;
+        let lastPlayerZ = 0;
 
         // AI
         let useAI = false;
@@ -253,6 +260,14 @@
         let gltfLoader;
         let mtlLoader;
         let objLoader;
+        let rocketShipTemplate = null; // loaded OBJ for player
+        
+        // Simple texture cache
+        const textures = {
+            rocketBase: null,
+            asteroidColor: null,
+            asteroidNormal: null
+        };
 
         // UI
         const scoreDisplay = document.getElementById("scoreDisplay");
@@ -336,18 +351,70 @@
             scene.add(dirLight);
 
             textureLoader = new THREE.TextureLoader();
+            initTextures();
 
             gltfLoader = (typeof THREE.GLTFLoader !== "undefined") ? new THREE.GLTFLoader() : null;
-            mtlLoader  = (typeof THREE.MTLLoader  !== "undefined") ? new THREE.MTLLoader()  : null;
-            objLoader  = (typeof THREE.OBJLoader  !== "undefined") ? new THREE.OBJLoader()  : null;
+            
+            // OBJ / MTL loaders for asteroid and rocket models in full mode
+            if (typeof THREE !== "undefined" && THREE.MTLLoader) {
+                mtlLoader = new THREE.MTLLoader();
+                mtlLoader.setPath("assets/");
+            } else if (typeof MTLLoader !== "undefined") {
+                mtlLoader = new MTLLoader();
+                mtlLoader.setPath("assets/");
+            } else {
+                console.warn("MTLLoader not found; full-mode models will fall back to primitives.");
+                mtlLoader = null;
+            }
+
+            if (typeof THREE !== "undefined" && THREE.OBJLoader) {
+                objLoader = new THREE.OBJLoader();
+                objLoader.setPath("assets/");
+            } else if (typeof OBJLoader !== "undefined") {
+                objLoader = new OBJLoader();
+                objLoader.setPath("assets/");
+            } else {
+                console.warn("OBJLoader not found; full-mode models will fall back to primitives.");
+                objLoader = null;
+            }
 
             createSky();
             createInfiniteFloor();
-
             setMode(true);
             setupInput();
 
             window.addEventListener("resize", onWindowResize);
+        }
+
+        function initTextures() {
+            // Rocket ship base color
+            textures.rocketBase = textureLoader.load(
+                "assets/Rocketship_baseColor.png",
+                undefined,
+                undefined,
+                function () {
+                    console.warn("Failed to load Rocketship_baseColor.png");
+                }
+            );
+
+            // Asteroid textures
+            textures.asteroidColor = textureLoader.load(
+                "assets/Asteroid2b_Color_1K.png",
+                undefined,
+                undefined,
+                function () {
+                    console.warn("Failed to load Asteroid2b_Color_1K.png");
+                }
+            );
+
+            textures.asteroidNormal = textureLoader.load(
+                "assets/Asteroid2b_NormalGL_1K.png",
+                undefined,
+                undefined,
+                function () {
+                    console.warn("Failed to load Asteroid2b_NormalGL_1K.png");
+                }
+            );
         }
 
         function computeCameraBasis() {
@@ -584,9 +651,18 @@
             isFalling = false;
             score = 0;
             lastTime = 0;
+            gameStartTime = 0; // Reset game start time
 
             scoreDisplay.textContent = "Score: 0.0";
             statusMessage.textContent = "";
+
+            // Reset player velocity tracking
+            if (player) {
+                lastPlayerX = player.position.x;
+                lastPlayerZ = player.position.z;
+            }
+            playerVelocityX = 0;
+            playerVelocityZ = 0;
 
             computerAI.reset();
         }
@@ -615,35 +691,108 @@
             const playerMat = new THREE.MeshStandardMaterial({ color: 0x4caf50 });
             player = new THREE.Mesh(playerGeo, playerMat);
             player.position.set(0, 1, 0);
+            player.rotation.y = -Math.PI / 4; // 45 degrees clockwise from top-down
             scene.add(player);
+            
+            // Initialize player position tracking for velocity calculation
+            lastPlayerX = player.position.x;
+            lastPlayerZ = player.position.z;
+            playerVelocityX = 0;
+            playerVelocityZ = 0;
         }
 
         function createFullPlayer() {
-            const fallback = createFallbackFullPlayer();
-            player = fallback;
-            scene.add(player);
+            // Try OBJ/MTL loader first (rocket ship)
+            if (rocketShipTemplate) {
+                // Already loaded once – just clone
+                player = rocketShipTemplate.clone();
+                applyRocketMaterials(player);
+                player.scale.set(1.5, 1.5, 1.5);
+                player.position.set(0, 1, 0);
+                player.rotation.y = -Math.PI / 4; // 45 degrees clockwise from top-down
+                scene.add(player);
+                lastPlayerX = player.position.x;
+                lastPlayerZ = player.position.z;
+                playerVelocityX = 0;
+                playerVelocityZ = 0;
+                updateCameraFollow(0);
+            } else if (mtlLoader && objLoader) {
+                // Load rocket from OBJ/MTL once
+                const fallbackPlayer = createFallbackFullPlayer();
+                player = fallbackPlayer;
+                player.rotation.y = -Math.PI / 4; // 45 degrees clockwise from top-down
+                scene.add(player);
+                
+                mtlLoader.load(
+                    "cartoon_rocket_ship.mtl",
+                    function (materials) {
+                        materials.preload();
+                        objLoader.setMaterials(materials);
+                        objLoader.load(
+                            "cartoon_rocket_ship.obj",
+                            function (obj) {
+                                rocketShipTemplate = obj;
+                                if (player) scene.remove(player);
 
-            if (!gltfLoader) return;
+                                player = rocketShipTemplate.clone();
+                                applyRocketMaterials(player);
+                                player.scale.set(1.5, 1.5, 1.5);
+                                player.position.set(0, 1, 0);
+                                player.rotation.y = -Math.PI / 4; // 45 degrees clockwise from top-down
+                                scene.add(player);
+                                lastPlayerX = player.position.x;
+                                lastPlayerZ = player.position.z;
+                                playerVelocityX = 0;
+                                playerVelocityZ = 0;
+                                updateCameraFollow(0);
+                            },
+                            undefined,
+                            function (err) {
+                                console.warn("Could not load rocket ship OBJ, using fallback player.", err);
+                            }
+                        );
+                    },
+                    undefined,
+                    function (err) {
+                        console.warn("Could not load rocket ship MTL, using fallback player.", err);
+                    }
+                );
+            } else if (gltfLoader) {
+                // Fallback to GLTF loader if available
+                const fallback = createFallbackFullPlayer();
+                player = fallback;
+                scene.add(player);
 
-            gltfLoader.load(
-                "assets/models/spaceship.glb",
-                function (gltf) {
-                    if (player) scene.remove(player);
-                    player = gltf.scene;
-                    player.traverse(obj => {
-                        if (obj.isMesh) {
-                            obj.castShadow = true;
-                            obj.receiveShadow = true;
-                        }
-                    });
-                    player.scale.set(1.8, 1.8, 1.8);
-                    player.position.set(0, 1, 0);
-                    scene.add(player);
-                    updateCameraFollow(0);
-                },
-                undefined,
-                function () {}
-            );
+                gltfLoader.load(
+                    "assets/models/spaceship.glb",
+                    function (gltf) {
+                        if (player) scene.remove(player);
+                        player = gltf.scene;
+                        player.traverse(obj => {
+                            if (obj.isMesh) {
+                                obj.castShadow = true;
+                                obj.receiveShadow = true;
+                            }
+                        });
+                        player.scale.set(1.8, 1.8, 1.8);
+                        player.position.set(0, 1, 0);
+                        scene.add(player);
+                        lastPlayerX = player.position.x;
+                        lastPlayerZ = player.position.z;
+                        playerVelocityX = 0;
+                        playerVelocityZ = 0;
+                        updateCameraFollow(0);
+                    },
+                    undefined,
+                    function () {}
+                );
+            } else {
+                // No loaders – use basic cylinder+cone
+                const fallbackPlayer = createFallbackFullPlayer();
+                player = fallbackPlayer;
+                player.rotation.y = -Math.PI / 4; // 45 degrees clockwise from top-down
+                scene.add(player);
+            }
         }
 
         function createFallbackFullPlayer() {
@@ -661,6 +810,41 @@
             group.add(nose);
             group.position.set(0, 1, 0);
             return group;
+        }
+
+        function applyRocketMaterials(root) {
+            root.traverse(obj => {
+                if (!obj.isMesh) return;
+
+                obj.castShadow = true;
+                obj.receiveShadow = true;
+
+                if (textures.rocketBase) {
+                    obj.material = new THREE.MeshStandardMaterial({
+                        map: textures.rocketBase,
+                        metalness: 0.3,
+                        roughness: 0.6
+                    });
+                } else if (obj.material) {
+                    obj.material = obj.material.clone();
+                }
+            });
+        }
+
+        function applyAsteroidMaterials(root) {
+            root.traverse(obj => {
+                if (!obj.isMesh) return;
+
+                obj.castShadow = true;
+                obj.receiveShadow = true;
+
+                obj.material = new THREE.MeshStandardMaterial({
+                    map: textures.asteroidColor || null,
+                    normalMap: textures.asteroidNormal || null,
+                    metalness: 0.1,
+                    roughness: 0.9
+                });
+            });
         }
 
         // ------------------------------------------------------------
@@ -705,6 +889,14 @@
                         obj.receiveShadow = true;
                     }
                 });
+                
+                mesh.rotation.x = Math.random() * Math.PI * 2;
+                mesh.rotation.y = Math.random() * Math.PI * 2;
+                mesh.rotation.z = Math.random() * Math.PI * 2;
+
+                const scale = Math.random() * 0.2 + 0.8;
+                mesh.scale.set(scale, scale, scale);
+                
                 resetMeteorNearPlayer(mesh, true);
                 scene.add(mesh);
                 meteors.push(mesh);
@@ -732,14 +924,15 @@
             // Try loading asteroid once, then backfill
             if (mtlLoader && objLoader) {
                 mtlLoader.load(
-                    "assets/Asteroid_2b.mtl",
+                    "Asteroid_2b.mtl",
                     function (materials) {
                         materials.preload();
                         objLoader.setMaterials(materials);
                         objLoader.load(
-                            "assets/Asteroid_2b.obj",
+                            "Asteroid_2b.obj",
                             function (obj) {
                                 asteroidTemplate = obj;
+                                applyAsteroidMaterials(asteroidTemplate);
                                 while (meteors.length < count) {
                                     spawnMeteorFromPrototype(asteroidTemplate);
                                 }
@@ -761,14 +954,16 @@
 
             function createFallbackRockMeteors(n) {
                 const meteorGeo = new THREE.SphereGeometry(0.8, 24, 24);
-                const rockTexture = textureLoader.load("assets/textures/rock.jpg");
-                const meteorMat = new THREE.MeshStandardMaterial({
-                    map: rockTexture,
-                    color: 0xffffff
-                });
 
                 while (meteors.length < n) {
-                    const mesh = new THREE.Mesh(meteorGeo, meteorMat);
+                    const mat = new THREE.MeshStandardMaterial({
+                        map: textures.asteroidColor || null,
+                        normalMap: textures.asteroidNormal || null,
+                        metalness: 0.1,
+                        roughness: 0.9
+                    });
+
+                    const mesh = new THREE.Mesh(meteorGeo, mat);
                     resetMeteorNearPlayer(mesh, true);
                     scene.add(mesh);
                     meteors.push(mesh);
@@ -799,6 +994,12 @@
             meteor.position.y = randomHeight
                 ? THREE.MathUtils.randFloat(6, 24)
                 : THREE.MathUtils.randFloat(14, 26);
+            
+            // Add horizontal velocity: random drift + player's current velocity
+            const randomDriftX = THREE.MathUtils.randFloat(-0.5, 0.5);
+            const randomDriftZ = THREE.MathUtils.randFloat(-0.5, 0.5);
+            meteor.userData.velocityX = randomDriftX + playerVelocityX;
+            meteor.userData.velocityZ = randomDriftZ + playerVelocityZ;
         }
 
         // ------------------------------------------------------------
@@ -965,11 +1166,17 @@
                 return;
             }
 
+            // Track game start time (first frame after reset)
+            if (gameStartTime === 0 && !isGameOver) {
+                gameStartTime = t;
+            }
+
             // Update floor + holes first so collision uses current holes
             updateInfiniteFloorAndHoles();
 
             if (!isGameOver) {
-                updateDifficulty(t);
+                const gameTime = gameStartTime > 0 ? t - gameStartTime : 0;
+                updateDifficulty(gameTime);
                 updatePlayer(delta);
                 updateCameraFollow(delta);
 
@@ -1045,7 +1252,11 @@
 
                 const meteorData = meteors.map(m => ({
                     position: { x: m.position.x, y: m.position.y, z: m.position.z },
-                    velocity: { x: 0, y: -meteorFallSpeed, z: 0 }
+                    velocity: { 
+                        x: m.userData.velocityX || 0, 
+                        y: -meteorFallSpeed, 
+                        z: m.userData.velocityZ || 0 
+                    }
                 }));
 
                 const move = computerAI.suggestMove(
@@ -1067,7 +1278,12 @@
                 if (moveState.backward) iz -= 1;
             }
 
-            if (ix === 0 && iz === 0) return;
+            // If no input, return to neutral tilt and exit
+            if (ix === 0 && iz === 0) {
+                player.rotation.x = THREE.MathUtils.lerp(player.rotation.x, 0, 0.15);
+                player.rotation.z = THREE.MathUtils.lerp(player.rotation.z, 0, 0.15);
+                return;
+            }
 
             const len = Math.sqrt(ix * ix + iz * iz);
             ix /= len;
@@ -1080,13 +1296,26 @@
             const dist = playerSpeed * delta;
             player.position.x += worldMove.x * dist;
             player.position.z += worldMove.z * dist;
+            
+            // Calculate player velocity (for meteor drift)
+            if (delta > 0) {
+                playerVelocityX = (player.position.x - lastPlayerX) / delta;
+                playerVelocityZ = (player.position.z - lastPlayerZ) / delta;
+                lastPlayerX = player.position.x;
+                lastPlayerZ = player.position.z;
+            }
 
+            // Tilt in the direction of movement (only when actually moving)
             const maxTilt = 0.35;
-            const targetTiltZ = THREE.MathUtils.clamp(-ix * maxTilt, -maxTilt, maxTilt);
-            const targetTiltX = THREE.MathUtils.clamp(-iz * maxTilt, -maxTilt, maxTilt);
-
-            player.rotation.z = THREE.MathUtils.lerp(player.rotation.z, targetTiltZ, 0.15);
+            const normalizedMove = new THREE.Vector3(worldMove.x, 0, worldMove.z).normalize();
+            // Tilt forward/backward based on Z movement, left/right based on X movement
+            // Forward (Z+) → tilt forward (rotation.x+), Backward (Z-) → tilt backward (rotation.x-)
+            // Left (X-) → tilt left (rotation.z+), Right (X+) → tilt right (rotation.z-)
+            const targetTiltX = THREE.MathUtils.clamp(normalizedMove.z * maxTilt, -maxTilt, maxTilt);
+            const targetTiltZ = THREE.MathUtils.clamp(-normalizedMove.x * maxTilt, -maxTilt, maxTilt);
+            
             player.rotation.x = THREE.MathUtils.lerp(player.rotation.x, targetTiltX, 0.15);
+            player.rotation.z = THREE.MathUtils.lerp(player.rotation.z, targetTiltZ, 0.15);
         }
 
         // ------------------------------------------------------------
@@ -1100,6 +1329,12 @@
                 const m = meteors[i];
                 const s = meteorShadows[i];
 
+                // Apply horizontal velocity
+                if (m.userData.velocityX !== undefined) {
+                    m.position.x += m.userData.velocityX * delta;
+                    m.position.z += m.userData.velocityZ * delta;
+                }
+                
                 m.position.y -= fallSpeed * delta;
                 m.rotation.x += 0.8 * delta;
                 m.rotation.y += 0.5 * delta;
