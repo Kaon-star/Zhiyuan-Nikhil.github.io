@@ -801,12 +801,6 @@
             player.rotation.y = -Math.PI / 4; // 45 degrees clockwise from top-down
             scene.add(player);
             
-            // Create rocket exhaust particles
-            if (!rocketExhaust) {
-                rocketExhaust = createRocketExhaust();
-                scene.add(rocketExhaust);
-            }
-            
             // Initialize player position tracking for velocity calculation
             lastPlayerX = player.position.x;
             lastPlayerZ = player.position.z;
@@ -1320,6 +1314,27 @@
         // Enemies (pooled chasers)
         // ------------------------------------------------------------
         function ensureEnemies(targetCount) {
+            // Prototype mode: spawn simple rectangle enemies (no alien models).
+            if (isPrototypeMode) {
+                const count = Math.min(targetCount, maxEnemyCount);
+
+                // Create simple box enemies until we reach count
+                const enemyGeo = new THREE.BoxGeometry(1.4, 1.2, 1.4);
+                while (enemies.length < count) {
+                    const mat = new THREE.MeshStandardMaterial({ color: 0xffcc66 });
+                    const e = new THREE.Mesh(enemyGeo, mat);
+                    e.position.y = 0.6;
+                    e.castShadow = true;
+                    e.receiveShadow = true;
+                    e.visible = true;
+                    spawnEnemyNearPlayer(e);
+                    scene.add(e);
+                    enemies.push(e);
+                }
+
+                activeEnemyCount = Math.min(count, enemies.length);
+                return;
+            }
             const count = Math.min(targetCount, maxEnemyCount);
             
             // Track maximum requested count (for when model is loading)
@@ -1637,6 +1652,17 @@
             // Trigger falling when fully inside a hole
             if (!isGameOver && isFullyInHole(player.position.x, player.position.z, playerRadius)) {
                 isGameOver = true;
+                
+                // Prototype mode: no black hole spinning/shrinking animation (instant game over message).
+                if (isPrototypeMode) {
+                    isFalling = false;
+                    statusMessage.style.color = "#ffcc66";
+                    statusMessage.textContent =
+                        "Game over! Final score " + score.toFixed(1) +
+                        ". You were consumed by a black hole! Press R or switch mode to restart.";
+                    return;
+                }
+
                 isFalling = true;
                 blackHoleAnimationStartTime = Date.now() / 1000;
                 
@@ -1785,6 +1811,40 @@
                 const m = meteors[i];
                 const s = meteorShadows[i];
                 
+                // Prototype mode: keep meteor + shadow logic simple and deterministic
+                if (isPrototypeMode) {
+                    // Clear any leftover animation state (e.g., after switching from full mode)
+                    if (meteorAnimations[i]) meteorAnimations[i] = null;
+
+                    // Ensure meteor is visible and fully opaque
+                    m.visible = true;
+                    if (m.material && m.material.opacity !== undefined) {
+                        m.material.opacity = 1.0;
+                        m.material.transparent = false;
+                    }
+
+                    // Fall + spin
+                    m.position.y -= fallSpeed * delta;
+                    m.rotation.x += 0.8 * delta;
+                    m.rotation.y += 0.5 * delta;
+
+                    // "Ground" collision => respawn (no crumble/debris)
+                    if (m.position.y <= 0.1) {
+                        resetMeteorNearPlayer(m, true);
+                    }
+
+                    // Shadow: always visible, tied to meteor x/z, scaled by height
+                    if (s) {
+                        s.visible = true;
+                        s.position.set(m.position.x, 0.02, m.position.z);
+                        const t = THREE.MathUtils.clamp((m.position.y - 2) / 18, 0, 1);
+                        const scale = THREE.MathUtils.lerp(1.5, 0.4, t);
+                        s.scale.set(scale, scale, 1);
+                        s.material.opacity = THREE.MathUtils.lerp(0.55, 0.15, t);
+                    }
+                    continue;
+                }
+                
                 // Check if this meteor is currently animating
                 const animData = meteorAnimations[i];
                 
@@ -1916,6 +1976,18 @@
 
                     // Check for ground collision
                     if (m.position.y <= 0.1) {
+                        // Prototype mode: no crumble/debris animation; just respawn the meteor.
+                        if (isPrototypeMode) {
+                            resetMeteorNearPlayer(m, true);
+                            m.visible = true;
+                            if (s) {
+                                s.visible = true;
+                                s.position.set(m.position.x, 0.02, m.position.z);
+                            }
+                            meteorAnimations[i] = null;
+                            continue;
+                        }
+
                         // Get meteor material for debris (before hiding)
                         let meteorMat = null;
                         if (m.material) {
@@ -2000,6 +2072,9 @@
         }
         
         function activateDebrisExplosion(position, meteorMaterial) {
+            // Prototype mode: no debris/crumble effects.
+            if (isPrototypeMode) return;
+
             // Activate debrisCount pieces from the pool for this explosion
             const availableDebris = debrisPool.filter(p => !p.visible);
             const countToUse = debrisCount; // Always try to use full count
@@ -2103,6 +2178,9 @@
         }
         
         function updateExplosionDebris(delta) {
+            // Prototype mode: no debris/crumble effects.
+            if (isPrototypeMode) return;
+
             const gravity = -9.8; // Gravity acceleration
             const currentTime = Date.now() / 1000;
             
